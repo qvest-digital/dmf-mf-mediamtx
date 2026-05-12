@@ -135,21 +135,31 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	// State owned by the OnData callback. OnData runs on the encoder's
 	// reader goroutine; nothing else touches these.
 	var subStream *stream.SubStream
-	var auCount uint64
 	var startNTPSet bool
 	var startNTP time.Time
+	var lastPTS int64 = -1
 
 	onData := func(au [][]byte) {
 		if len(au) == 0 {
 			return
 		}
-		ptsTicks := int64(auCount) * rate.Den * 90000 / rate.Num
+		// Wall-clock-derived PTS keeps timing correct even when the
+		// consumer drops grains under CPU pressure (see freshest-grain
+		// strategy in the main loop below). Two AUs may land in the
+		// same 90 kHz tick when the encoder bursts; clamp so PTS stays
+		// strictly monotonic (downstream RTSP/HLS muxers require it).
+		now := time.Now()
 		if !startNTPSet {
-			startNTP = time.Now()
+			startNTP = now
 			startNTPSet = true
 		}
-		ntp := startNTP.Add(time.Duration(int64(auCount) * 1e9 * rate.Den / rate.Num))
-		auCount++
+		elapsed := now.Sub(startNTP)
+		ptsTicks := elapsed.Nanoseconds() * 90000 / int64(time.Second)
+		if ptsTicks <= lastPTS {
+			ptsTicks = lastPTS + 1
+		}
+		lastPTS = ptsTicks
+		ntp := now
 
 		pkts, err := rtpEnc.Encode(au)
 		if err != nil {
@@ -198,10 +208,31 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	cbPlane := make([]byte, (width/2)*(height/2))
 	crPlane := make([]byte, (width/2)*(height/2))
 
-	idx := mxl.CurrentIndex(rate)
-	if idx == mxl.UndefinedIndex {
-		return fmt.Errorf("invalid edit rate from flow info")
+	// freshestIndex picks the grain we'll request next: the writer's
+	// current head minus a small safety margin. This makes the consumer
+	// "live" — if encoding is slower than the writer's pace, we drop
+	// frames instead of falling behind the ring buffer window. Wall-clock
+	// PTS (above) keeps downstream timing correct regardless of drops.
+	//
+	// The margin keeps us from racing the writer at the leading edge of
+	// the buffer; with a 5-grain ring this leaves ~3 grains of headroom.
+	const safetyMargin uint64 = 1
+	freshestIndex := func() (uint64, error) {
+		rt, err := reader.Runtime()
+		if err != nil {
+			return 0, err
+		}
+		if rt.HeadIndex > safetyMargin {
+			return rt.HeadIndex - safetyMargin, nil
+		}
+		return rt.HeadIndex, nil
 	}
+
+	idx, err := freshestIndex()
+	if err != nil {
+		return fmt.Errorf("initial sync: %w", err)
+	}
+	var lastIdx uint64
 
 	for {
 		select {
@@ -220,11 +251,15 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		case err == nil:
 			// fall through
 		case errors.Is(err, mxl.ErrTimeout):
-			idx = mxl.CurrentIndex(rate)
+			if idx, err = freshestIndex(); err != nil {
+				return fmt.Errorf("resync after timeout: %w", err)
+			}
 			continue
 		case errors.Is(err, mxl.ErrOutOfRangeLate):
-			s.Log(logger.Warn, "fell behind writer, resyncing")
-			idx = mxl.CurrentIndex(rate)
+			// Encoder + ring window can't keep up at all; jump to head.
+			if idx, err = freshestIndex(); err != nil {
+				return fmt.Errorf("resync after fall-behind: %w", err)
+			}
 			continue
 		case errors.Is(err, mxl.ErrOutOfRangeEarly):
 			time.Sleep(2 * time.Millisecond)
@@ -234,20 +269,43 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		}
 
 		if grain.Invalid() || !grain.Complete() {
-			idx++
+			idx, err = freshestIndex()
+			if err != nil {
+				return fmt.Errorf("resync: %w", err)
+			}
 			continue
 		}
 
+		// Skip if we re-pulled the same grain (writer hasn't advanced yet).
+		if grain.Index == lastIdx {
+			time.Sleep(time.Millisecond)
+			idx, err = freshestIndex()
+			if err != nil {
+				return fmt.Errorf("resync: %w", err)
+			}
+			continue
+		}
+		lastIdx = grain.Index
+
 		if err := unpacker.Unpack(grain.Payload, srcStride, yPlane, cbPlane, crPlane); err != nil {
 			s.Log(logger.Error, "v210 unpack: %v", err)
-			idx++
+			idx, err = freshestIndex()
+			if err != nil {
+				return fmt.Errorf("resync: %w", err)
+			}
 			continue
 		}
 
 		if err := enc.Encode(yPlane, cbPlane, crPlane); err != nil {
 			return fmt.Errorf("encoder write: %w", err)
 		}
-		idx++
+
+		// Always pick the freshest available grain next, dropping any
+		// frames produced by the writer while we were busy encoding.
+		idx, err = freshestIndex()
+		if err != nil {
+			return fmt.Errorf("resync: %w", err)
+		}
 	}
 }
 
