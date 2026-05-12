@@ -296,6 +296,14 @@ type Path struct {
 	RPICameraSecondaryFPS          float64   `json:"-"` // filled by Validate()
 	RPICameraSecondaryMJPEGQuality uint      `json:"-"` // filled by Validate()
 
+	// MXL source
+	MXLFFmpegPath    string `json:"mxlFFmpegPath"`
+	MXLCodec         string `json:"mxlCodec"`
+	MXLH264Preset    string `json:"mxlH264Preset"`
+	MXLH264Profile   string `json:"mxlH264Profile"`
+	MXLH264Bitrate   uint   `json:"mxlH264Bitrate"`
+	MXLH264IDRPeriod uint   `json:"mxlH264IDRPeriod"`
+
 	// Hooks
 	RunOnInit                  string   `json:"runOnInit"`
 	RunOnInitRestart           bool     `json:"runOnInitRestart"`
@@ -363,6 +371,14 @@ func (pconf *Path) setDefaults() {
 	pconf.RPICameraSoftwareH264Profile = "baseline"
 	pconf.RPICameraSoftwareH264Level = "4.1"
 	pconf.RPICameraMJPEGQuality = 60
+
+	// MXL source
+	pconf.MXLFFmpegPath = "ffmpeg"
+	pconf.MXLCodec = "h264"
+	pconf.MXLH264Preset = "veryfast"
+	pconf.MXLH264Profile = "high"
+	pconf.MXLH264Bitrate = 5000000
+	pconf.MXLH264IDRPeriod = 0
 
 	// Hooks
 	pconf.RunOnDemandStartTimeout = 10 * Duration(time.Second)
@@ -691,6 +707,29 @@ func (pconf *Path) validate(
 			primary.RPICameraSecondaryHeight = pconf.RPICameraHeight
 			primary.RPICameraSecondaryFPS = pconf.RPICameraFPS
 			primary.RPICameraSecondaryMJPEGQuality = pconf.RPICameraMJPEGQuality
+		}
+
+	case strings.HasPrefix(pconf.Source, "mxl://"):
+		if _, err := url.Parse(pconf.Source); err != nil {
+			return fmt.Errorf("'%s' is not a valid URL", pconf.Source)
+		}
+
+		switch pconf.MXLCodec {
+		case "h264":
+		default:
+			return fmt.Errorf("invalid 'mxlCodec' value (only 'h264' is supported)")
+		}
+
+		switch pconf.MXLH264Preset {
+		case "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow":
+		default:
+			return fmt.Errorf("invalid 'mxlH264Preset' value")
+		}
+
+		switch pconf.MXLH264Profile {
+		case "baseline", "main", "high":
+		default:
+			return fmt.Errorf("invalid 'mxlH264Profile' value")
 		}
 
 	default:

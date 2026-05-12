@@ -13,6 +13,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/logger"
 	sshls "github.com/bluenviron/mediamtx/internal/staticsources/hls"
 	ssmpegts "github.com/bluenviron/mediamtx/internal/staticsources/mpegts"
+	ssmxl "github.com/bluenviron/mediamtx/internal/staticsources/mxl"
 	ssrpicamera "github.com/bluenviron/mediamtx/internal/staticsources/rpicamera"
 	ssrtmp "github.com/bluenviron/mediamtx/internal/staticsources/rtmp"
 	ssrtp "github.com/bluenviron/mediamtx/internal/staticsources/rtp"
@@ -163,6 +164,13 @@ func (s *Handler) Initialize() {
 
 	case s.Conf.Source == "rpiCamera":
 		s.instance = &ssrpicamera.Source{
+			RTPMaxPayloadSize: s.RTPMaxPayloadSize,
+			LogLevel:          s.LogLevel,
+			Parent:            s,
+		}
+
+	case strings.HasPrefix(s.Conf.Source, "mxl://"):
+		s.instance = &ssmxl.Source{
 			RTPMaxPayloadSize: s.RTPMaxPayloadSize,
 			LogLevel:          s.LogLevel,
 			Parent:            s,

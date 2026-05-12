@@ -27,6 +27,7 @@ const (
 	APIPathSourceTypeSRTConn         APIPathSourceType = "srtConn"
 	APIPathSourceTypeSRTSource       APIPathSourceType = "srtSource"
 	APIPathSourceTypeMPEGTSSource    APIPathSourceType = "mpegtsSource"
+	APIPathSourceTypeMXLSource       APIPathSourceType = "mxlSource"
 	APIPathSourceTypeRTPSource       APIPathSourceType = "rtpSource"
 	APIPathSourceTypeWebRTCSession   APIPathSourceType = "webRTCSession"
 	APIPathSourceTypeWebRTCSource    APIPathSourceType = "webRTCSource"
