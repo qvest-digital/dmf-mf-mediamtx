@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1.7
+#
+# mediamtx-mxl image (PR #1 fork variant — internal/staticsources/mxl).
+#
+# Built FROM prebuilt libmxl images published by qvest-digital/mxl-dmf-demo
+# CI, so this repo's CI does not need to compile libmxl + vcpkg every time.
+# Bump LIBMXL_TAG to roll the libmxl version forward; defaulting to :latest
+# is fine for the showcase but pin to a SHA-resolved tag for prod.
+#
+# Build:
+#   docker buildx build --platform linux/amd64 -f Dockerfile.mxl -t mediamtx-mxl:dev .
+
+ARG LIBMXL_TAG=latest
+
+# -------- 1. mediamtx builder (cgo-link against libmxl) --------
+FROM ghcr.io/qvest-digital/libmxl-dev:${LIBMXL_TAG} AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go bindings live in the qvest-digital/mxl-dmf-demo monorepo under /go.
+# PR #14 (https://github.com/qvest-digital/mxl-dmf-demo/pull/14) ships them on
+# the claude/musing-kalam-1213f8 branch. Once that merges to qvest the import
+# can resolve via go get on a tagged module and this clone + replace dance
+# goes away.
+ARG GOBIND_REPO=https://github.com/qvest-digital/mxl-dmf-demo.git
+ARG GOBIND_REF=claude/musing-kalam-1213f8
+
+WORKDIR /src
+RUN git clone --depth=1 --branch ${GOBIND_REF} ${GOBIND_REPO} mxl-binding
+
+COPY . /src/mediamtx
+WORKDIR /src/mediamtx
+
+RUN go mod edit -replace github.com/qvest-digital/mxl-dmf-demo/go=/src/mxl-binding/go \
+ && go mod download \
+ && go mod tidy || true
+
+# Generate the embeds mediamtx's go build expects (VERSION file, hls.min.js,
+# rpicam binaries). Without this the embed:directive in core/, hls/, and
+# staticsources/rpicamera/ blows up with "pattern matched no files".
+RUN go generate ./...
+
+ENV CGO_ENABLED=1
+RUN go build -o /out/mediamtx .
+
+# Smoke-check that the cgo link actually picked up libmxl + libmxl-common.
+RUN ldd /out/mediamtx | grep -E 'libmxl|not found' || true
+
+
+# -------- 2. mediamtx-mxl runtime --------
+FROM ghcr.io/qvest-digital/libmxl:${LIBMXL_TAG} AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /out/mediamtx /usr/local/bin/mediamtx
+
+# mediamtx defaults: RTSP 8554, RTMP 1935, HLS 8888, WebRTC 8889, SRT 8890.
+EXPOSE 8554 1935 8888 8889 8890
+
+ENTRYPOINT ["/usr/bin/dumb-init", "--", "/usr/local/bin/mediamtx"]
+CMD ["/mediamtx.yml"]
