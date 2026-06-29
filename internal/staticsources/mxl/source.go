@@ -29,6 +29,16 @@ import (
 
 const (
 	readTimeout = 500 * time.Millisecond
+
+	// staleTimeout: once grains have started flowing, if the flow's head index
+	// stops advancing for this long the writer has almost certainly torn down
+	// and recreated the flow — e.g. an SRT source reconnect makes the bridge
+	// build a new flow generation. Our reader then holds a handle to the old,
+	// now-static shared memory and would spin forever re-reading the last grain
+	// (frozen video, no error). Returning lets the static-source handler re-run
+	// Run() with a fresh instance/reader that re-discovers the current flow —
+	// the same self-heal the demo-app compositor already does on FLOW_INVALID.
+	staleTimeout = 2 * time.Second
 )
 
 // flowDef is the subset of the NMOS IS-04 flow definition we need.
@@ -233,6 +243,10 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		return fmt.Errorf("initial sync: %w", err)
 	}
 	var lastIdx uint64
+	// Self-heal watchdog state: started flips true on the first decoded grain;
+	// lastProgress is bumped whenever the head advances. See staleTimeout.
+	var started bool
+	lastProgress := time.Now()
 
 	for {
 		select {
@@ -244,6 +258,14 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		case <-params.Context.Done():
 			return nil
 		default:
+		}
+
+		// Once the flow has been live, a prolonged head stall means the writer
+		// recreated the flow (new generation) and our reader is stuck on the
+		// dead one. Return so the handler re-runs Run() against the fresh flow.
+		if started && time.Since(lastProgress) > staleTimeout {
+			return fmt.Errorf("flow %s stalled for %v (writer likely recreated the flow); "+
+				"restarting source to re-open the reader", flowID, staleTimeout)
 		}
 
 		grain, err := reader.GetGrain(idx, readTimeout)
@@ -286,6 +308,8 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			continue
 		}
 		lastIdx = grain.Index
+		started = true
+		lastProgress = time.Now()
 
 		if err := unpacker.Unpack(grain.Payload, srcStride, yPlane, cbPlane, crPlane); err != nil {
 			s.Log(logger.Error, "v210 unpack: %v", err)
