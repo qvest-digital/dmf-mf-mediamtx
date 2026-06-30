@@ -135,31 +135,29 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	// State owned by the OnData callback. OnData runs on the encoder's
 	// reader goroutine; nothing else touches these.
 	var subStream *stream.SubStream
-	var startNTPSet bool
-	var startNTP time.Time
-	var lastPTS int64 = -1
+	// Frame-counter PTS: stamp each OUTPUT frame at a fixed grain-period cadence
+	// instead of wall-clock arrival time. Grains become readable with ~7ms of
+	// timing jitter (when each is read+encoded); stamping PTS from time.Now()
+	// propagates that jitter and a player shows visibly uneven motion even
+	// though every frame is present and the count is a clean 30fps. Counting
+	// output frames makes PTS perfectly uniform — exactly one grain period
+	// apart. The encoder runs zerolatency with no B-frames, so each onData is
+	// exactly one output frame, in order.
+	ticksPerFrame := int64(90000) * int64(rate.Den) / int64(rate.Num)
+	if ticksPerFrame <= 0 {
+		ticksPerFrame = 3003 // 90kHz / 29.97fps
+	}
+	var frameCount int64
 
 	onData := func(au [][]byte) {
 		if len(au) == 0 {
 			return
 		}
-		// Wall-clock-derived PTS keeps timing correct even when the
-		// consumer drops grains under CPU pressure (see freshest-grain
-		// strategy in the main loop below). Two AUs may land in the
-		// same 90 kHz tick when the encoder bursts; clamp so PTS stays
-		// strictly monotonic (downstream RTSP/HLS muxers require it).
-		now := time.Now()
-		if !startNTPSet {
-			startNTP = now
-			startNTPSet = true
-		}
-		elapsed := now.Sub(startNTP)
-		ptsTicks := elapsed.Nanoseconds() * 90000 / int64(time.Second)
-		if ptsTicks <= lastPTS {
-			ptsTicks = lastPTS + 1
-		}
-		lastPTS = ptsTicks
-		ntp := now
+		// Uniform PTS from the output-frame counter (see ticksPerFrame above):
+		// one grain period per frame, independent of read/encode arrival jitter.
+		ptsTicks := frameCount * ticksPerFrame
+		frameCount++
+		ntp := time.Now()
 
 		pkts, err := rtpEnc.Encode(au)
 		if err != nil {
