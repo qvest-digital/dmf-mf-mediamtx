@@ -50,7 +50,11 @@ RUN ldd /out/mediamtx | grep -E 'libmxl|not found' || true
 
 
 # -------- 2. mediamtx-mxl runtime --------
-FROM ghcr.io/qvest-digital/libmxl:${LIBMXL_TAG} AS runtime
+# Base on libmxl-dev (which the builder above already pulls) rather than the
+# runtime-only libmxl image: the latter isn't published at :latest, so the
+# build 404'd. libmxl-dev ships the same libmxl .so, so the binary's cgo link
+# matches at runtime.
+FROM ghcr.io/qvest-digital/libmxl-dev:${LIBMXL_TAG} AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg \
