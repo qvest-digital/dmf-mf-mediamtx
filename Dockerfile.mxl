@@ -1,69 +1,37 @@
-# syntax=docker/dockerfile:1.7
+# mediamtx-mxl image.
 #
-# mediamtx-mxl image (PR #1 fork variant — internal/staticsources/mxl).
-#
-# Built FROM prebuilt libmxl images published by qvest-digital/mxl-dmf-demo
-# CI, so this repo's CI does not need to compile libmxl + vcpkg every time.
-# Bump LIBMXL_TAG to roll the libmxl version forward; defaulting to :latest
-# is fine for the showcase but pin to a SHA-resolved tag for prod.
-#
-# Build:
-#   docker buildx build --platform linux/amd64 -f Dockerfile.mxl -t mediamtx-mxl:dev .
+# The old recipe built FROM ghcr.io/qvest-digital/libmxl(-dev):latest, but
+# those tags aren't published -> the build 404'd. Build instead against the
+# go-mxl-builder image (ships libmxl under /opt/libmxl, same one the writer +
+# gateway link) and land the binary in the current published mediamtx-mxl
+# runtime (has ffmpeg + entrypoint), carrying the matching libmxl .so.
+ARG GO_MXL_TAG=1.0.0-rc.8
 
-ARG LIBMXL_TAG=latest
-
-# -------- 1. mediamtx builder (cgo-link against libmxl) --------
-FROM ghcr.io/qvest-digital/libmxl-dev:${LIBMXL_TAG} AS builder
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      git ca-certificates \
+# -------- 1. builder: cgo-link mediamtx against libmxl --------
+FROM ghcr.io/qvest-digital/go-mxl-builder:${GO_MXL_TAG} AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+ENV PKG_CONFIG_PATH=/opt/libmxl/lib/pkgconfig
+ENV LD_LIBRARY_PATH=/opt/libmxl/lib
+ENV CGO_CFLAGS="-I/opt/libmxl/include"
+ENV CGO_LDFLAGS="-L/opt/libmxl/lib -lmxl"
+ENV CGO_ENABLED=1
 
-# Go bindings live in the qvest-digital/mxl-dmf-demo monorepo under /go.
-# PR #14 (https://github.com/qvest-digital/mxl-dmf-demo/pull/14) ships them on
-# the claude/musing-kalam-1213f8 branch. Once that merges to qvest the import
-# can resolve via go get on a tagged module and this clone + replace dance
-# goes away.
+# Go bindings for libmxl (qvest-digital/mxl-dmf-demo /go).
 ARG GOBIND_REPO=https://github.com/qvest-digital/mxl-dmf-demo.git
 ARG GOBIND_REF=claude/musing-kalam-1213f8
-
 WORKDIR /src
 RUN git clone --depth=1 --branch ${GOBIND_REF} ${GOBIND_REPO} mxl-binding
-
 COPY . /src/mediamtx
 WORKDIR /src/mediamtx
-
 RUN go mod edit -replace github.com/qvest-digital/mxl-dmf-demo/go=/src/mxl-binding/go \
- && go mod download \
- && go mod tidy || true
-
-# Generate the embeds mediamtx's go build expects (VERSION file, hls.min.js,
-# rpicam binaries). Without this the embed:directive in core/, hls/, and
-# staticsources/rpicamera/ blows up with "pattern matched no files".
+ && go mod download && (go mod tidy || true)
 RUN go generate ./...
+RUN go build -o /out/mediamtx . && ldd /out/mediamtx | grep -E 'libmxl|not found' || true
 
-ENV CGO_ENABLED=1
-RUN go build -o /out/mediamtx .
-
-# Smoke-check that the cgo link actually picked up libmxl + libmxl-common.
-RUN ldd /out/mediamtx | grep -E 'libmxl|not found' || true
-
-
-# -------- 2. mediamtx-mxl runtime --------
-# Base on libmxl-dev (which the builder above already pulls) rather than the
-# runtime-only libmxl image: the latter isn't published at :latest, so the
-# build 404'd. libmxl-dev ships the same libmxl .so, so the binary's cgo link
-# matches at runtime.
-FROM ghcr.io/qvest-digital/libmxl-dev:${LIBMXL_TAG} AS runtime
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-
+# -------- 2. runtime: swap the binary into the published image --------
+FROM ghcr.io/qvest-digital/mxl-dmf-demo-app/mediamtx-mxl:latest AS runtime
 COPY --from=builder /out/mediamtx /usr/local/bin/mediamtx
-
-# mediamtx defaults: RTSP 8554, RTMP 1935, HLS 8888, WebRTC 8889, SRT 8890.
+COPY --from=builder /opt/libmxl/lib/ /opt/libmxl/lib/
+ENV LD_LIBRARY_PATH=/opt/libmxl/lib
 EXPOSE 8554 1935 8888 8889 8890
-
-ENTRYPOINT ["/usr/bin/dumb-init", "--", "/usr/local/bin/mediamtx"]
-CMD ["/mediamtx.yml"]
