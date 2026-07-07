@@ -39,6 +39,16 @@ const (
 	// Run() with a fresh instance/reader that re-discovers the current flow —
 	// the same self-heal the demo-app compositor already does on FLOW_INVALID.
 	staleTimeout = 2 * time.Second
+
+	// firstGrainTimeout: how long we wait for the FIRST grain after (re)opening
+	// the reader. When the writer recreates the flow, the old mirror can still
+	// be present while we re-open, so NewReader binds to the dead generation:
+	// GetGrain then times out forever and the stale watchdog above never arms
+	// (started is still false) — the path wedges silently with the encoder up
+	// but nothing published (DMF-397). Returning re-runs Run(); a fresh open
+	// picks up the new mirror once the gateway has re-materialized it. Generous
+	// so a writer that is merely slow to start doesn't flap the encoder.
+	firstGrainTimeout = 10 * time.Second
 )
 
 // flowDef is the subset of the NMOS IS-04 flow definition we need.
@@ -266,6 +276,13 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		if started && time.Since(lastProgress) > staleTimeout {
 			return fmt.Errorf("flow %s stalled for %v (writer likely recreated the flow); "+
 				"restarting source to re-open the reader", flowID, staleTimeout)
+		}
+
+		// Same idea for the pre-start phase: if no grain ever arrives the
+		// reader is likely bound to a stale mirror of a recreated flow.
+		if !started && time.Since(lastProgress) > firstGrainTimeout {
+			return fmt.Errorf("no grain within %v of opening flow %s (reader bound to a stale "+
+				"flow generation?); restarting source to re-open the reader", firstGrainTimeout, flowID)
 		}
 
 		grain, err := reader.GetGrain(idx, readTimeout)
