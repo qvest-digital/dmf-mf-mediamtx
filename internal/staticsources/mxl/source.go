@@ -39,6 +39,19 @@ const (
 	// Run() with a fresh instance/reader that re-discovers the current flow —
 	// the same self-heal the demo-app compositor already does on FLOW_INVALID.
 	staleTimeout = 2 * time.Second
+
+	// firstGrainTimeout: how long we wait for the FIRST grain after (re)opening
+	// the reader. Without it the loop can starve forever with the stale
+	// watchdog above never arming (started is still false) — the path wedges
+	// silently with the encoder up but nothing published (DMF-397). Verified
+	// causes: a writer that only emits invalid/skipped grains (whole ring
+	// invalid while head keeps advancing — seen live on dev, writer bug
+	// tracked separately) or a reader bound to a dead flow generation after
+	// recreation. Returning re-runs Run() so the path keeps retrying, logs the
+	// diag counters below, and comes online by itself once the source is
+	// healthy again. Generous so a writer that is merely slow to start doesn't
+	// flap the encoder.
+	firstGrainTimeout = 10 * time.Second
 )
 
 // flowDef is the subset of the NMOS IS-04 flow definition we need.
@@ -247,6 +260,18 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	// lastProgress is bumped whenever the head advances. See staleTimeout.
 	var started bool
 	lastProgress := time.Now()
+	// Diagnostic counters, reported when a watchdog fires so the log tells
+	// WHICH loop path starved the reader instead of a bare "no grain".
+	var nTimeout, nLate, nEarly, nInvalid, nSameIdx uint64
+	diag := func() string {
+		rt, rerr := reader.Runtime()
+		head := uint64(0)
+		if rerr == nil {
+			head = rt.HeadIndex
+		}
+		return fmt.Sprintf("head=%d lastIdx=%d timeouts=%d late=%d early=%d invalid=%d sameIdx=%d",
+			head, lastIdx, nTimeout, nLate, nEarly, nInvalid, nSameIdx)
+	}
 
 	for {
 		select {
@@ -264,8 +289,15 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		// recreated the flow (new generation) and our reader is stuck on the
 		// dead one. Return so the handler re-runs Run() against the fresh flow.
 		if started && time.Since(lastProgress) > staleTimeout {
-			return fmt.Errorf("flow %s stalled for %v (writer likely recreated the flow); "+
-				"restarting source to re-open the reader", flowID, staleTimeout)
+			return fmt.Errorf("flow %s stalled for %v (writer likely recreated the flow; %s); "+
+				"restarting source to re-open the reader", flowID, staleTimeout, diag())
+		}
+
+		// Same idea for the pre-start phase: if no grain ever arrives the
+		// reader is likely bound to a stale mirror of a recreated flow.
+		if !started && time.Since(lastProgress) > firstGrainTimeout {
+			return fmt.Errorf("no grain within %v of opening flow %s (%s); "+
+				"restarting source to re-open the reader", firstGrainTimeout, flowID, diag())
 		}
 
 		grain, err := reader.GetGrain(idx, readTimeout)
@@ -273,17 +305,20 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		case err == nil:
 			// fall through
 		case errors.Is(err, mxl.ErrTimeout):
+			nTimeout++
 			if idx, err = freshestIndex(); err != nil {
 				return fmt.Errorf("resync after timeout: %w", err)
 			}
 			continue
 		case errors.Is(err, mxl.ErrOutOfRangeLate):
+			nLate++
 			// Encoder + ring window can't keep up at all; jump to head.
 			if idx, err = freshestIndex(); err != nil {
 				return fmt.Errorf("resync after fall-behind: %w", err)
 			}
 			continue
 		case errors.Is(err, mxl.ErrOutOfRangeEarly):
+			nEarly++
 			time.Sleep(2 * time.Millisecond)
 			continue
 		default:
@@ -291,15 +326,52 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		}
 
 		if grain.Invalid() || !grain.Complete() {
-			idx, err = freshestIndex()
-			if err != nil {
-				return fmt.Errorf("resync: %w", err)
+			nInvalid++
+			// One-shot forensic scan: how far behind head do grains become
+			// valid? Tells whether safetyMargin is simply too small for
+			// same-node (mirror-less) consumption. DMF-397 diagnostics.
+			if nInvalid == 1 {
+				rt, rerr := reader.Runtime()
+				if rerr == nil {
+					scan := ""
+					for back := uint64(1); back <= 6 && rt.HeadIndex > back; back++ {
+						g, gerr := reader.GetGrain(rt.HeadIndex-back, 10*time.Millisecond)
+						switch {
+						case gerr != nil:
+							scan += fmt.Sprintf(" head-%d:err(%v)", back, gerr)
+						case g.Invalid():
+							scan += fmt.Sprintf(" head-%d:invalid", back)
+						case !g.Complete():
+							scan += fmt.Sprintf(" head-%d:incomplete", back)
+						default:
+							scan += fmt.Sprintf(" head-%d:OK", back)
+						}
+					}
+					s.Log(logger.Warn, "grain validity scan (head=%d):%s", rt.HeadIndex, scan)
+				}
+			}
+			// Adaptive fallback: freshest grain keeps being invalid (e.g.
+			// same-node read hits uncommitted/skip grains at the head) —
+			// step further back instead of hammering the same index.
+			backoff := uint64(1 + nInvalid/1000)
+			if backoff > uint64(info.Config.Discrete.GrainCount)-1 {
+				backoff = uint64(info.Config.Discrete.GrainCount) - 1
+			}
+			rt, rerr := reader.Runtime()
+			if rerr != nil {
+				return fmt.Errorf("resync: %w", rerr)
+			}
+			if rt.HeadIndex > backoff {
+				idx = rt.HeadIndex - backoff
+			} else {
+				idx = rt.HeadIndex
 			}
 			continue
 		}
 
 		// Skip if we re-pulled the same grain (writer hasn't advanced yet).
 		if grain.Index == lastIdx {
+			nSameIdx++
 			time.Sleep(time.Millisecond)
 			idx, err = freshestIndex()
 			if err != nil {
