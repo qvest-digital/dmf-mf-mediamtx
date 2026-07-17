@@ -8,6 +8,8 @@ on:
   push:
     branches:
       - feature/mxl-static-source
+    tags:
+      - "mxl-v*"
   workflow_dispatch:
 
 permissions:
@@ -27,6 +29,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
+      - name: Derive image tags
+        id: tags
+        shell: bash
+        run: |
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/mxl-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#mxl-v}" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build and push mediamtx-mxl
         uses: docker/build-push-action@v6
         with:
@@ -35,9 +45,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/qvest-digital/mediamtx-mxl:${{ github.sha }}
-            ghcr.io/qvest-digital/mediamtx-mxl:latest
-          build-args: |
-            LIBMXL_TAG=latest
+            ghcr.io/qvest-digital/mediamtx-mxl:${{ steps.tags.outputs.sha }}
+            ${{ steps.tags.outputs.version && format('ghcr.io/qvest-digital/mediamtx-mxl:{0}', steps.tags.outputs.version) || '' }}
+            ${{ github.ref == 'refs/heads/feature/mxl-static-source' && 'ghcr.io/qvest-digital/mediamtx-mxl:latest' || '' }}
           cache-from: type=registry,ref=ghcr.io/qvest-digital/mediamtx-mxl:buildcache
           cache-to: type=registry,ref=ghcr.io/qvest-digital/mediamtx-mxl:buildcache,mode=max
