@@ -10,7 +10,7 @@ ARG GO_MXL_TAG=1.0.0-rc.9
 
 # -------- 1. builder: cgo-link mediamtx against libmxl --------
 FROM ghcr.io/qvest-digital/go-mxl-builder:${GO_MXL_TAG} AS builder
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 ENV PKG_CONFIG_PATH=/opt/libmxl/lib/pkgconfig
 ENV LD_LIBRARY_PATH=/opt/libmxl/lib
