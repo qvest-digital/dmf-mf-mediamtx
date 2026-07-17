@@ -10,6 +10,9 @@ on:
       - feature/mxl-static-source
     tags:
       - "mxl-v*"
+  pull_request:
+    branches:
+      - feature/mxl-static-source
   workflow_dispatch:
 
 permissions:
@@ -43,7 +46,9 @@ jobs:
           context: .
           file: Dockerfile.mxl
           platforms: linux/amd64
-          push: true
+          # PRs validate the build (compile against go-mxl rc.9) without publishing;
+          # branch/tag pushes publish.
+          push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ghcr.io/qvest-digital/mediamtx-mxl:${{ steps.tags.outputs.sha }}
             ${{ steps.tags.outputs.version && format('ghcr.io/qvest-digital/mediamtx-mxl:{0}', steps.tags.outputs.version) || '' }}
