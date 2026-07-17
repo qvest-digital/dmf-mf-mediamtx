@@ -24,7 +24,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/stream"
 	"github.com/bluenviron/mediamtx/internal/unit"
 
-	mxl "github.com/qvest-digital/mxl-dmf-demo/go"
+	mxl "github.com/qvest-digital/go-mxl/mxl"
 )
 
 const (
