@@ -5,7 +5,8 @@
 # go-mxl-builder image (ships libmxl under /opt/libmxl, same one the writer +
 # gateway link) and land the binary in the current published mediamtx-mxl
 # runtime (has ffmpeg + entrypoint), carrying the matching libmxl .so.
-ARG GO_MXL_TAG=1.0.0-rc.8
+# renovate: datasource=docker depName=ghcr.io/qvest-digital/go-mxl-builder
+ARG GO_MXL_TAG=1.0.0-rc.9
 
 # -------- 1. builder: cgo-link mediamtx against libmxl --------
 FROM ghcr.io/qvest-digital/go-mxl-builder:${GO_MXL_TAG} AS builder
@@ -17,17 +18,11 @@ ENV CGO_CFLAGS="-I/opt/libmxl/include"
 ENV CGO_LDFLAGS="-L/opt/libmxl/lib -lmxl"
 ENV CGO_ENABLED=1
 
-# Go bindings for libmxl (qvest-digital/mxl-dmf-demo /go).
-ARG GOBIND_REPO=https://github.com/qvest-digital/mxl-dmf-demo.git
-ARG GOBIND_REF=claude/musing-kalam-1213f8
-WORKDIR /src
-RUN git clone --depth=1 --branch ${GOBIND_REF} ${GOBIND_REPO} mxl-binding
 COPY . /src/mediamtx
 WORKDIR /src/mediamtx
-RUN go mod edit -replace github.com/qvest-digital/mxl-dmf-demo/go=/src/mxl-binding/go \
- && go mod download && (go mod tidy || true)
-RUN go generate ./...
-RUN go build -o /out/mediamtx . && ldd /out/mediamtx | grep -E 'libmxl|not found' || true
+RUN go mod download && go generate ./... \
+ && go build -o /out/mediamtx . \
+ && ldd /out/mediamtx | grep -E 'libmxl|not found' || true
 
 # -------- 2. runtime: swap the binary into the published image --------
 FROM ghcr.io/qvest-digital/mxl-dmf-demo-app/mediamtx-mxl:latest AS runtime
