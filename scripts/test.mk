@@ -12,6 +12,20 @@ test-core:
 
 test-nodocker: test-internal test-core
 
+# libmxl is published for 64-bit glibc only, so three packages cannot be built
+# for a 32-bit target: the MXL static source, the static source registry that
+# imports it, and internal/core through that registry. The sibling static
+# sources do not reach it and stay covered.
+#
+# go list -e because those three fail to load without libmxl, which would
+# otherwise abort the listing before the filter runs.
+test-internal-32:
+	go generate ./...
+	go test -v -coverprofile=coverage-internal.txt \
+	$$(go list -e ./internal/... | grep -Ev '/internal/core$$|/internal/staticsources$$|/internal/staticsources/mxl$$')
+
+test-nodocker-32: test-internal-32
+
 define DOCKERFILE_TEST
 ARG ARCH
 FROM $$ARCH/$(BASE_IMAGE)
@@ -34,4 +48,4 @@ test-32:
 	docker run --rm \
 	-v "$(shell pwd):/s" \
 	temp \
-	make test-nodocker
+	make test-nodocker-32

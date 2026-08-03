@@ -171,6 +171,7 @@ func goEnumToApi(rt reflect.Type) (openAPISchema, bool) {
 			"rtpSource",
 			"webRTCSession",
 			"webRTCSource",
+			"mxlSource",
 		}}, true
 
 	case reflect.TypeOf(defs.APIPathReaderType("")):

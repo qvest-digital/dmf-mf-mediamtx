@@ -7,7 +7,7 @@ import (
 
 // V210Unpacker converts SMPTE 372M / Apple v210 (10-bit packed 4:2:2) into
 // planar YUV 4:2:0 8-bit suitable for an H.264 encoder. Bit-depth is reduced
-// from 10 → 8 by dropping the two LSBs of each component; vertical chroma is
+// from 10 -> 8 by dropping the two LSBs of each component; vertical chroma is
 // downsampled by averaging adjacent line pairs.
 //
 // Width must be a multiple of 6 (v210's packing unit). Height must be even.
@@ -50,11 +50,11 @@ func (u *V210Unpacker) Unpack(src []byte, srcStride int, y, cb, cr []byte) error
 		return fmt.Errorf("v210: srcStride %d too small for width %d", srcStride, u.width)
 	}
 	if len(src) < srcStride*u.height {
-		return fmt.Errorf("v210: src %d bytes too small for %d×%d at stride %d",
+		return fmt.Errorf("v210: src %d bytes too small for %dx%d at stride %d",
 			len(src), u.width, u.height, srcStride)
 	}
 	if len(y) < u.width*u.height {
-		return fmt.Errorf("v210: y plane %d bytes too small for %d×%d", len(y), u.width, u.height)
+		return fmt.Errorf("v210: y plane %d bytes too small for %dx%d", len(y), u.width, u.height)
 	}
 	cwh := (u.width / 2) * (u.height / 2)
 	if len(cb) < cwh || len(cr) < cwh {
@@ -73,7 +73,7 @@ func (u *V210Unpacker) Unpack(src []byte, srcStride int, y, cb, cr []byte) error
 		halfW := u.width / 2
 		cbOut := cb[(row/2)*halfW : (row/2+1)*halfW]
 		crOut := cr[(row/2)*halfW : (row/2+1)*halfW]
-		for c := 0; c < halfW; c++ {
+		for c := range halfW {
 			cbOut[c] = byte((uint16(u.cbTop[c]) + uint16(u.cbBot[c])) >> 1)
 			crOut[c] = byte((uint16(u.crTop[c]) + uint16(u.crBot[c])) >> 1)
 		}
@@ -86,7 +86,7 @@ func (u *V210Unpacker) Unpack(src []byte, srcStride int, y, cb, cr []byte) error
 func unpackV210Line(src, y, cb, cr []byte) {
 	width := len(y)
 	groups := width / 6
-	for g := 0; g < groups; g++ {
+	for g := range groups {
 		off := g * 16
 		w0 := binary.LittleEndian.Uint32(src[off:])
 		w1 := binary.LittleEndian.Uint32(src[off+4:])
@@ -99,7 +99,7 @@ func unpackV210Line(src, y, cb, cr []byte) {
 		//   w1: Y1   Cb1  Y2
 		//   w2: Cr1  Y3   Cb2
 		//   w3: Y4   Cr2  Y5
-		// Convert 10-bit → 8-bit by dropping the two LSBs.
+		// Convert 10-bit -> 8-bit by dropping the two LSBs.
 		yo := g * 6
 		co := g * 3
 		y[yo+0] = byte((w0 >> 12) & 0xFF) // Y0 high 8 of 10

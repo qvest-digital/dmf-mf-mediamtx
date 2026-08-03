@@ -1,0 +1,35 @@
+name: Provide libmxl
+description: >-
+  Puts libmxl and pkg-config on the runner so the packages that bind libmxl
+  through cgo can be compiled, vetted and tested.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+
+        # The version comes from the image recipe rather than being repeated
+        # here. Every reader and writer sharing an MXL domain has to link a
+        # byte-identical libmxl, so what CI links and what the released image
+        # links cannot be allowed to drift apart.
+        tag=$(sed -n 's/^ARG GO_MXL_TAG=//p' Dockerfile.mxl | head -1)
+        if [ -z "$tag" ]; then
+          echo "no ARG GO_MXL_TAG in Dockerfile.mxl" >&2
+          exit 1
+        fi
+
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends pkg-config
+
+        # The builder image carries libmxl under /opt/libmxl. Landing it at
+        # the same prefix keeps the paths its pkg-config file records valid.
+        cid=$(docker create "ghcr.io/qvest-digital/go-mxl-builder:${tag}")
+        docker cp "$cid:/opt/libmxl" /tmp/libmxl
+        docker rm "$cid" >/dev/null
+        sudo mv /tmp/libmxl /opt/libmxl
+
+        pkg-config --exists libmxl && echo "libmxl $(pkg-config --modversion libmxl)"
+      env:
+        PKG_CONFIG_PATH: /opt/libmxl/lib/pkgconfig

@@ -10,6 +10,10 @@ jobs:
   go:
     runs-on: ubuntu-22.04
 
+    env:
+      PKG_CONFIG_PATH: /opt/libmxl/lib/pkgconfig
+      LD_LIBRARY_PATH: /opt/libmxl/lib
+
     steps:
     - uses: actions/checkout@v6
       with:
@@ -20,6 +24,10 @@ jobs:
         go-version: "1.26"
 
     - run: go generate ./...
+
+    # The MXL static source binds libmxl through cgo, so without it the
+    # package does not typecheck and every linter reports on it.
+    - uses: ./.github/actions/libmxl
 
     - uses: golangci/golangci-lint-action@v9
       with:
