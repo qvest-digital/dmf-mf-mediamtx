@@ -1,18 +1,18 @@
-name: Build mediamtx-mxl Image
+name: Build image
 
-# Builds the qvest-digital mediamtx fork (mxl:// static source + self-heal) and
-# pushes to BOTH the canonical package and the mxl-dmf-demo-app package the
-# showcase deployment references, so a push here actually updates the demo.
+# Builds the fork and publishes it to the package this repository owns.
+# The mediamtx-mxl packages are frozen: they keep serving the tags already
+# published and receive no new builds.
 
 on:
   push:
     branches:
-      - feature/mxl-static-source
+      - main
     tags:
       - "mxl-v*"
   pull_request:
     branches:
-      - feature/mxl-static-source
+      - main
   workflow_dispatch:
 
 permissions:
@@ -21,7 +21,9 @@ permissions:
 
 jobs:
   build:
-    if: github.repository == 'qvest-digital/mediamtx'
+    # A repository rename leaves this string behind, and a mismatch skips the
+    # job silently rather than failing it.
+    if: github.repository == 'qvest-digital/dmf-mf-mediamtx'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,18 +42,18 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/mxl-v* ]]; then
             echo "version=${GITHUB_REF_NAME#mxl-v}" >> "$GITHUB_OUTPUT"
           fi
-      - name: Build and push mediamtx-mxl
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.mxl
           platforms: linux/amd64
-          # PRs validate the build (compile against go-mxl rc.9) without publishing;
-          # branch/tag pushes publish.
+          # PRs validate the cgo link against libmxl without publishing;
+          # branch and tag pushes publish.
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ghcr.io/qvest-digital/mediamtx-mxl:${{ steps.tags.outputs.sha }}
-            ${{ steps.tags.outputs.version && format('ghcr.io/qvest-digital/mediamtx-mxl:{0}', steps.tags.outputs.version) || '' }}
-            ${{ github.ref == 'refs/heads/feature/mxl-static-source' && 'ghcr.io/qvest-digital/mediamtx-mxl:latest' || '' }}
-          cache-from: type=registry,ref=ghcr.io/qvest-digital/mediamtx-mxl:buildcache
-          cache-to: type=registry,ref=ghcr.io/qvest-digital/mediamtx-mxl:buildcache,mode=max
+            ghcr.io/qvest-digital/dmf-mf-mediamtx:${{ steps.tags.outputs.sha }}
+            ${{ steps.tags.outputs.version && format('ghcr.io/qvest-digital/dmf-mf-mediamtx:{0}', steps.tags.outputs.version) || '' }}
+            ${{ github.ref == 'refs/heads/main' && 'ghcr.io/qvest-digital/dmf-mf-mediamtx:latest' || '' }}
+          cache-from: type=registry,ref=ghcr.io/qvest-digital/dmf-mf-mediamtx:buildcache
+          cache-to: type=registry,ref=ghcr.io/qvest-digital/dmf-mf-mediamtx:buildcache,mode=max
