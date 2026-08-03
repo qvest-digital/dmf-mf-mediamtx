@@ -32,22 +32,23 @@ const (
 
 	// staleTimeout: once grains have started flowing, if the flow's head index
 	// stops advancing for this long the writer has almost certainly torn down
-	// and recreated the flow — e.g. an SRT source reconnect makes the bridge
+	// and recreated the flow -- e.g. an SRT source reconnect makes the bridge
 	// build a new flow generation. Our reader then holds a handle to the old,
 	// now-static shared memory and would spin forever re-reading the last grain
 	// (frozen video, no error). Returning lets the static-source handler re-run
-	// Run() with a fresh instance/reader that re-discovers the current flow —
+	// Run() with a fresh instance/reader that re-discovers the current flow --
 	// the same self-heal the demo-app compositor already does on FLOW_INVALID.
 	staleTimeout = 2 * time.Second
 
 	// firstGrainTimeout: how long we wait for the FIRST grain after (re)opening
 	// the reader. Without it the loop can starve forever with the stale
-	// watchdog above never arming (started is still false) — the path wedges
-	// silently with the encoder up but nothing published (DMF-397). Verified
-	// causes: a writer that only emits invalid/skipped grains (whole ring
-	// invalid while head keeps advancing — seen live on dev, writer bug
-	// tracked separately) or a reader bound to a dead flow generation after
-	// recreation. Returning re-runs Run() so the path keeps retrying, logs the
+	// watchdog above never arming (started is still false): the path wedges
+	// silently with the encoder up but nothing published. Known causes: a
+	// writer that only emits invalid or skipped grains (the whole ring stays
+	// invalid while head keeps advancing), or a reader bound to a dead flow
+	// generation after recreation.
+	//
+	// Returning re-runs Run() so the path keeps retrying, logs the
 	// diag counters below, and comes online by itself once the source is
 	// healthy again. Generous so a writer that is merely slow to start doesn't
 	// flap the encoder.
@@ -99,13 +100,13 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	if err != nil {
 		return fmt.Errorf("open MXL instance: %w", err)
 	}
-	defer inst.Close()
+	defer func() { _ = inst.Close() }()
 
 	reader, err := inst.NewReader(flowID)
 	if err != nil {
 		return fmt.Errorf("open MXL reader: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	info, err := reader.Info()
 	if err != nil {
@@ -120,7 +121,8 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		return fmt.Errorf("read flow def: %w", err)
 	}
 	var def flowDef
-	if err := json.Unmarshal([]byte(defJSON), &def); err != nil {
+	err = json.Unmarshal([]byte(defJSON), &def)
+	if err != nil {
 		return fmt.Errorf("parse flow def: %w", err)
 	}
 	if def.MediaType != "video/v210" {
@@ -151,7 +153,8 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		PayloadType:    96,
 		PayloadMaxSize: s.RTPMaxPayloadSize,
 	}
-	if err := rtpEnc.Init(); err != nil {
+	err = rtpEnc.Init()
+	if err != nil {
 		return fmt.Errorf("rtp encoder: %w", err)
 	}
 
@@ -184,9 +187,9 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		lastPTS = ptsTicks
 		ntp := now
 
-		pkts, err := rtpEnc.Encode(au)
-		if err != nil {
-			s.Log(logger.Error, "rtp encode: %v", err)
+		pkts, rtpErr := rtpEnc.Encode(au)
+		if rtpErr != nil {
+			s.Log(logger.Error, "rtp encode: %v", rtpErr)
 			return
 		}
 		if subStream == nil {
@@ -233,7 +236,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 	// freshestIndex picks the grain we'll request next: the writer's
 	// current head minus a small safety margin. This makes the consumer
-	// "live" — if encoding is slower than the writer's pace, we drop
+	// "live" -- if encoding is slower than the writer's pace, we drop
 	// frames instead of falling behind the ring buffer window. Wall-clock
 	// PTS (above) keeps downstream timing correct regardless of drops.
 	//
@@ -241,9 +244,9 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	// the buffer; with a 5-grain ring this leaves ~3 grains of headroom.
 	const safetyMargin uint64 = 1
 	freshestIndex := func() (uint64, error) {
-		rt, err := reader.Runtime()
-		if err != nil {
-			return 0, err
+		rt, rtErr := reader.Runtime()
+		if rtErr != nil {
+			return 0, rtErr
 		}
 		if rt.HeadIndex > safetyMargin {
 			return rt.HeadIndex - safetyMargin, nil
@@ -275,9 +278,9 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 	for {
 		select {
-		case err := <-encErr:
-			if err != nil {
-				return fmt.Errorf("encoder: %w", err)
+		case exitErr := <-encErr:
+			if exitErr != nil {
+				return fmt.Errorf("encoder: %w", exitErr)
 			}
 			return errors.New("encoder exited")
 		case <-params.Context.Done():
@@ -300,7 +303,8 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 				"restarting source to re-open the reader", firstGrainTimeout, flowID, diag())
 		}
 
-		grain, err := reader.GetGrain(idx, readTimeout)
+		var grain mxl.Grain
+		grain, err = reader.GetGrain(idx, readTimeout)
 		switch {
 		case err == nil:
 			// fall through
@@ -329,7 +333,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			nInvalid++
 			// One-shot forensic scan: how far behind head do grains become
 			// valid? Tells whether safetyMargin is simply too small for
-			// same-node (mirror-less) consumption. DMF-397 diagnostics.
+			// same-node (mirror-less) consumption.
 			if nInvalid == 1 {
 				rt, rerr := reader.Runtime()
 				if rerr == nil {
@@ -351,12 +355,9 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 				}
 			}
 			// Adaptive fallback: freshest grain keeps being invalid (e.g.
-			// same-node read hits uncommitted/skip grains at the head) —
+			// same-node read hits uncommitted/skip grains at the head), so
 			// step further back instead of hammering the same index.
-			backoff := uint64(1 + nInvalid/1000)
-			if backoff > uint64(info.Config.Discrete.GrainCount)-1 {
-				backoff = uint64(info.Config.Discrete.GrainCount) - 1
-			}
+			backoff := min(1+nInvalid/1000, uint64(info.Config.Discrete.GrainCount)-1)
 			rt, rerr := reader.Runtime()
 			if rerr != nil {
 				return fmt.Errorf("resync: %w", rerr)
@@ -383,7 +384,8 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		started = true
 		lastProgress = time.Now()
 
-		if err := unpacker.Unpack(grain.Payload, srcStride, yPlane, cbPlane, crPlane); err != nil {
+		err = unpacker.Unpack(grain.Payload, srcStride, yPlane, cbPlane, crPlane)
+		if err != nil {
 			s.Log(logger.Error, "v210 unpack: %v", err)
 			idx, err = freshestIndex()
 			if err != nil {
@@ -392,7 +394,8 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			continue
 		}
 
-		if err := enc.Encode(yPlane, cbPlane, crPlane); err != nil {
+		err = enc.Encode(yPlane, cbPlane, crPlane)
+		if err != nil {
 			return fmt.Errorf("encoder write: %w", err)
 		}
 

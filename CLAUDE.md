@@ -54,10 +54,22 @@ Every reader and writer sharing an MXL domain must link a byte-identical
 libmxl. `ARG GO_MXL_TAG` pins it, and moving it in isolation from the node
 agent and the writers corrupts cross-node reads without an error.
 
-## Known-failing checks
+## CI
 
-`test.yml` and `lint.yml` are inherited from upstream and fail on the fork:
-the go2api linter compares reflected `conf.Path` against `api/openapi.yaml`,
-which does not list the `mxl*` properties; the `internal/conf` fixture does
-not know the fork's defaults; and neither runner has libmxl. Fixing them means
-either teaching them about the fork or scoping them to what can pass.
+The Go jobs get libmxl from `.github/actions/libmxl`, which lands it at
+`/opt/libmxl` out of the builder image at the tag `Dockerfile.mxl` pins.
+Reading the tag from there rather than repeating it is what keeps CI and the
+released image linking the same libmxl.
+
+The 64-bit test job runs on the host instead of through the dockerised target:
+that image is musl-based and libmxl is built against glibc.
+
+libmxl is published for 64-bit glibc only, so the 32-bit job cannot cover the
+three packages that reach it -- the MXL source, the static source registry
+that imports it, and `internal/core` through the registry -- and skips exactly
+those.
+
+Two upstream-owned files carry fork state and will conflict on an upstream
+merge: `api/openapi.yaml` lists the `mxl*` path properties and `mxlSource`,
+and the `internal/conf` fixture asserts the fork's path defaults. They are
+what the go2api linter and the conf test compare against.

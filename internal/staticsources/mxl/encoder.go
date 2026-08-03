@@ -93,7 +93,8 @@ func NewH264Encoder(p EncoderParams) (*H264Encoder, error) {
 	// doesn't reach the child and we have a well-defined target for kill.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	if err != nil {
 		return nil, fmt.Errorf("start %s: %w", p.FFmpegPath, err)
 	}
 
@@ -211,7 +212,7 @@ func (e *H264Encoder) run() {
 	e.finalErr = e.runInner()
 }
 
-// runInner is the shutdown choreography: three things can end the encoder —
+// runInner is the shutdown choreography: three things can end the encoder --
 // ffmpeg exits on its own, the stdout reader errors, or Close is called.
 // Each branch closes the pipes in an order that lets the other goroutines
 // unblock and reports an appropriate terminal error.
