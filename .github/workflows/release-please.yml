@@ -1,0 +1,32 @@
+name: release-please
+
+# Tags carry an mxl- prefix. Upstream cuts v* tags and this fork keeps its
+# history, so a bare v* namespace would collide with a version stream this
+# repository does not control.
+#
+# The image build already publishes a version tag on refs/tags/mxl-v*, so the
+# tag this cuts is what makes a released image carry a version.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # A tag pushed by the default GITHUB_TOKEN starts no workflow, so the
+      # image build would never see the release.
+      - uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: .github/release-please-config.json
+          manifest-file: .github/release-please-manifest.json
