@@ -1,10 +1,7 @@
-# mediamtx-mxl image.
-#
-# The old recipe built FROM ghcr.io/qvest-digital/libmxl(-dev):latest, but
-# those tags aren't published -> the build 404'd. Build instead against the
-# go-mxl-builder image (ships libmxl under /opt/libmxl, same one the writer +
-# gateway link) and land the binary in the current published mediamtx-mxl
-# runtime (has ffmpeg + entrypoint), carrying the matching libmxl .so.
+# The builder is go-mxl-builder because it ships libmxl under /opt/libmxl.
+# Every reader and writer sharing an MXL domain must link a byte-identical
+# libmxl, so the binary is built against the same one the writers and the node
+# agent link, and the runtime stage carries that .so beside it.
 # renovate: datasource=docker depName=ghcr.io/qvest-digital/go-mxl-builder
 ARG GO_MXL_TAG=1.0.0-rc.9
 
@@ -25,8 +22,12 @@ RUN go mod download && go generate ./... \
  && ldd /out/mediamtx | grep -E 'libmxl|not found' || true
 
 # -------- 2. runtime: swap the binary into the published image --------
+# The base supplies ffmpeg and the entrypoint. It is published by another
+# repository, which makes this image depend on a package it does not own.
 FROM ghcr.io/qvest-digital/mxl-dmf-demo-app/mediamtx-mxl:latest AS runtime
 COPY --from=builder /out/mediamtx /usr/local/bin/mediamtx
 COPY --from=builder /opt/libmxl/lib/ /opt/libmxl/lib/
+# MIT requires the notice to travel with substantial portions of the work.
+COPY LICENSE /usr/share/doc/mediamtx/LICENSE
 ENV LD_LIBRARY_PATH=/opt/libmxl/lib
 EXPOSE 8554 1935 8888 8889 8890
