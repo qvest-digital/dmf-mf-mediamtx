@@ -1,46 +1,52 @@
-<h1 align="center">
-  <a href="https://mediamtx.org">
-    <img src="logo.png" alt="MediaMTX">
-  </a>
+# dmf-mf-mediamtx
 
-  <br>
-  <br>
+A fork of [bluenviron/mediamtx](https://github.com/bluenviron/mediamtx) that
+adds an MXL static source. Not an official MediaMTX release.
 
-  [![Website](https://img.shields.io/badge/website-mediamtx.org-1c94b5)](https://mediamtx.org)
-  [![Test](https://github.com/bluenviron/mediamtx/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/bluenviron/mediamtx/actions/workflows/test.yml?query=branch%3Amain)
-  [![Lint](https://github.com/bluenviron/mediamtx/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/bluenviron/mediamtx/actions/workflows/lint.yml?query=branch%3Amain)
-  [![CodeCov](https://codecov.io/gh/bluenviron/mediamtx/branch/main/graph/badge.svg)](https://app.codecov.io/gh/bluenviron/mediamtx/tree/main)
-  [![Release](https://img.shields.io/github/v/release/bluenviron/mediamtx)](https://github.com/bluenviron/mediamtx/releases)
-  [![Docker Hub](https://img.shields.io/badge/docker-bluenviron/mediamtx-blue)](https://hub.docker.com/r/bluenviron/mediamtx)
-</h1>
+Upstream documentation applies to everything else this server does:
+[mediamtx.org](https://mediamtx.org/docs/kickoff/introduction).
 
-<br>
+## What the fork adds
 
-_MediaMTX_ is a ready-to-use and zero-dependency real-time media server and media proxy that allows to publish, read, proxy, record and playback video and audio streams. It has been conceived as a "media router" that routes media streams from one end to the other, with a focus on efficiency and portability.
+A `mxl://` static source. A path configured with
+`source: mxl:///<runtime-root>/<domain>/<flow-id>` opens that MXL flow through
+libmxl and republishes it over the server's existing RTSP, HLS, WebRTC and SRT
+outputs. Grains are read zero-copy from the node-local domain, and the reader
+is paced to the flow's nominal grain rate rather than polling the ring buffer
+at maximum speed.
 
-<div align="center">
+Encoding shells out to `ffmpeg`, so no GPL-licensed code is linked into the
+binary.
 
-  |[Install](https://mediamtx.org/docs/kickoff/install)|[Documentation](https://mediamtx.org/docs/kickoff/introduction)|
-  |-|-|
+Path options the fork adds, accepted by both the configuration file and the
+`/v3/config/paths/*` HTTP API: `mxlFFmpegPath`, `mxlCodec`, `mxlH264Preset`,
+`mxlH264Profile`, `mxlH264Bitrate`, `mxlH264IDRPeriod`.
 
-</div>
+Paths can be added and removed at runtime over the HTTP API with none present
+at boot; a newly added `mxl://` path starts its source immediately.
 
-<h3>Features</h3>
+## Image
 
-- [Publish](https://mediamtx.org/docs/features/publish) live streams to the server with SRT, WebRTC, RTSP, RTMP, HLS, MPEG-TS, RTP, using FFmpeg, GStreamer, OBS Studio, Python , Golang, Unity, web browsers, Raspberry Pi Cameras and more.
-- [Read](https://mediamtx.org/docs/features/read) live streams from the server with SRT, WebRTC, RTSP, RTMP, HLS, using FFmpeg, GStreamer, VLC, OBS Studio, Python , Golang, Unity, web browsers and more.
-- Streams are automatically converted from a protocol to another
-- Serve several streams at once in separate paths
-- Reload the configuration without disconnecting existing clients (hot reloading)
-- [Serve always-available streams](https://mediamtx.org/docs/features/always-available) even when the publisher is offline
-- [Record](https://mediamtx.org/docs/features/record) streams to disk in fMP4 or MPEG-TS format
-- [Playback](https://mediamtx.org/docs/features/playback) recorded streams
-- [Authenticate](https://mediamtx.org/docs/features/authentication) users with internal, HTTP or JWT authentication
-- [Forward](https://mediamtx.org/docs/features/forward) streams to other servers
-- [Proxy](https://mediamtx.org/docs/features/proxy) requests to other servers
-- [Control](https://mediamtx.org/docs/features/control-api) the server through the Control API
-- [Extract metrics](https://mediamtx.org/docs/features/metrics) from the server in a Prometheus-compatible format
-- [Monitor performance](https://mediamtx.org/docs/features/performance) to investigate CPU and RAM consumption
-- [Run hooks](https://mediamtx.org/docs/features/hooks) (external commands) when clients connect, disconnect, read or publish streams
-- Compatible with Linux, Windows and macOS, does not require any dependency or interpreter, it's a single executable
-- ...and many [others](https://mediamtx.org/docs/kickoff/introduction).
+    ghcr.io/qvest-digital/dmf-mf-mediamtx
+
+Tags: the 7-character commit SHA for every build on `main`, `latest` for the
+head of `main`, and the bare version for an `mxl-v*` tag.
+
+## Building
+
+The MXL source is cgo and links libmxl, so a plain `go build` needs
+`pkg-config` and libmxl present and fails without them. `Dockerfile.mxl`
+builds against `go-mxl-builder`, which ships libmxl under `/opt/libmxl`.
+
+Every reader and writer sharing an MXL domain must link a byte-identical
+libmxl. `ARG GO_MXL_TAG` in `Dockerfile.mxl` is what pins it.
+
+## Branches
+
+- `main` carries the fork.
+- `upstream-main` tracks `bluenviron/mediamtx` unmodified and is the base for
+  merging upstream changes.
+
+## License
+
+MIT, unchanged from upstream. See [LICENSE](LICENSE).
