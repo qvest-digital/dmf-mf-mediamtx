@@ -81,6 +81,11 @@ func TestConfFromFile(t *testing.T) {
 			RPICameraSoftwareH264Profile: "baseline",
 			RPICameraSoftwareH264Level:   "4.1",
 			RPICameraMJPEGQuality:        60,
+			MXLFFmpegPath:                "ffmpeg",
+			MXLCodec:                     "h264",
+			MXLH264Preset:                "veryfast",
+			MXLH264Profile:               "high",
+			MXLH264Bitrate:               5000000,
 			RunOnDemandStartTimeout:      5 * Duration(time.Second),
 			RunOnDemandCloseAfter:        10 * Duration(time.Second),
 		}, pa)
