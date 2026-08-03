@@ -41,6 +41,7 @@ components:
       - rtpSource
       - webRTCSession
       - webRTCSource
+      - mxlSource
 
     PathReaderType:
       type: string
@@ -896,6 +897,22 @@ components:
           nullable: true
           deprecated: true
         rpiCameraMJPEGQuality:
+          type: integer
+          format: uint64
+
+        # MXL source
+        mxlFFmpegPath:
+          type: string
+        mxlCodec:
+          type: string
+        mxlH264Preset:
+          type: string
+        mxlH264Profile:
+          type: string
+        mxlH264Bitrate:
+          type: integer
+          format: uint64
+        mxlH264IDRPeriod:
           type: integer
           format: uint64
 
