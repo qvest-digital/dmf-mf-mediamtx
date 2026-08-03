@@ -8,7 +8,9 @@ on:
 
 jobs:
   test_64:
-    runs-on: ubuntu-22.04
+    # libmxl is built against a newer libstdc++ than 22.04 ships, so linking a
+    # test binary that reaches it fails there on GLIBCXX/CXXABI symbols.
+    runs-on: ubuntu-24.04
 
     env:
       PKG_CONFIG_PATH: /opt/libmxl/lib/pkgconfig
@@ -47,7 +49,8 @@ jobs:
     - run: make test-32
 
   test_e2e:
-    runs-on: ubuntu-22.04
+    # Same libstdc++ requirement as test_64.
+    runs-on: ubuntu-24.04
 
     env:
       PKG_CONFIG_PATH: /opt/libmxl/lib/pkgconfig
