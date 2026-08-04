@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.2](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.1...mxl-v1.0.0-rc.2) (2026-08-04)
+
+
+### Dependencies
+
+* move onto go-mxl 1.0.0-rc.12 ([#18](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/18)) ([ea74809](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/ea748097f94d3c69a8db2f6afb1d1beb936b750a))
+
 ## [1.0.0-rc.1](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.0...mxl-v1.0.0-rc.1) (2026-08-03)
 
 
