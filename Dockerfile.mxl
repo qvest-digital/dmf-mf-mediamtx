@@ -3,7 +3,7 @@
 # libmxl, so the binary is built against the same one the writers and the node
 # agent link, and the runtime stage carries that .so beside it.
 # renovate: datasource=docker depName=ghcr.io/qvest-digital/go-mxl-builder
-ARG GO_MXL_TAG=1.0.0-rc.9
+ARG GO_MXL_TAG=1.0.0-rc.12
 
 # -------- 1. builder: cgo-link mediamtx against libmxl --------
 FROM ghcr.io/qvest-digital/go-mxl-builder:${GO_MXL_TAG} AS builder
