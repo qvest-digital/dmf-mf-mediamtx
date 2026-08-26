@@ -131,10 +131,12 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	width, height := def.FrameWidth, def.FrameHeight
 	srcStride := int(info.Config.Discrete.SliceSizes[0])
 	rate := info.Config.Common.GrainRate
-	fps := uint32((rate.Num + rate.Den/2) / rate.Den)
+	if rate.Num <= 0 || rate.Den <= 0 {
+		return fmt.Errorf("flow %s declares grain rate %d/%d", flowID, rate.Num, rate.Den)
+	}
 
-	s.Log(logger.Info, "flow geometry %dx%d @ %d/%d (~%dfps), stride=%d, ringSize=%d",
-		width, height, rate.Num, rate.Den, fps, srcStride, info.Config.Discrete.GrainCount)
+	s.Log(logger.Info, "flow geometry %dx%d @ %d/%d (%.3ffps), stride=%d, ringSize=%d",
+		width, height, rate.Num, rate.Den, rate.Float64(), srcStride, info.Config.Discrete.GrainCount)
 
 	unpacker, err := NewV210Unpacker(width, height)
 	if err != nil {
@@ -218,7 +220,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		}
 	}()
 
-	enc, err := NewH264Encoder(encoderParamsFromConf(params.Conf, width, height, fps, onData))
+	enc, err := NewH264Encoder(encoderParamsFromConf(params.Conf, width, height, rate, onData))
 	if err != nil {
 		return fmt.Errorf("h264 encoder: %w", err)
 	}
@@ -409,19 +411,20 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 }
 
 // encoderParamsFromConf reads the mxlH264* fields off the path config and
-// produces the EncoderParams the encoder consumes. width/height/fps are
+// produces the EncoderParams the encoder consumes. Geometry and rate are
 // derived from the flow, not configurable per-path. onData is the per-AU
 // callback that does RTP packetization and substream publishing.
 func encoderParamsFromConf(
 	cnf *conf.Path,
-	width, height int, fps uint32,
+	width, height int, rate mxl.Rational,
 	onData func([][]byte),
 ) EncoderParams {
 	return EncoderParams{
 		FFmpegPath: cnf.MXLFFmpegPath,
 		Width:      uint32(width),
 		Height:     uint32(height),
-		FPS:        fps,
+		RateNum:    rate.Num,
+		RateDen:    rate.Den,
 		Preset:     cnf.MXLH264Preset,
 		Profile:    cnf.MXLH264Profile,
 		Bitrate:    uint32(cnf.MXLH264Bitrate),
