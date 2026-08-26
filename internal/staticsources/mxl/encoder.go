@@ -16,11 +16,17 @@ type EncoderParams struct {
 	FFmpegPath string
 	Width      uint32
 	Height     uint32
-	FPS        uint32
-	Preset     string // x264 preset, e.g. "veryfast"
-	Profile    string // "baseline" | "main" | "high"
-	Bitrate    uint32 // target bitrate in bits/sec; 0 means use ffmpeg/x264 default
-	IDRPeriod  uint32 // distance between IDR frames in frames; 0 means use FPS
+	// RateNum/RateDen carry the flow's grain rate as the exact fraction the
+	// flow declares. ffmpeg takes a fraction, so a 60000/1001 flow is encoded
+	// as 59.94 rather than as the 60 an integer field would round it to; the
+	// rounded value reaches the SPS and x264's rate control, both of which
+	// then describe a stream the flow does not produce.
+	RateNum   int64
+	RateDen   int64
+	Preset    string // x264 preset, e.g. "veryfast"
+	Profile   string // "baseline" | "main" | "high"
+	Bitrate   uint32 // target bitrate in bits/sec; 0 means use ffmpeg/x264 default
+	IDRPeriod uint32 // distance between IDR frames in frames; 0 derives it from the rate
 
 	// OnData is invoked for every encoded access unit, in input order, from
 	// the encoder's reader goroutine. The callback may block (write to a
@@ -66,8 +72,8 @@ func NewH264Encoder(p EncoderParams) (*H264Encoder, error) {
 	if p.Width%2 != 0 || p.Height%2 != 0 {
 		return nil, fmt.Errorf("dimensions must be even, got %dx%d", p.Width, p.Height)
 	}
-	if p.FPS == 0 {
-		return nil, fmt.Errorf("FPS must be non-zero")
+	if p.RateNum <= 0 || p.RateDen <= 0 {
+		return nil, fmt.Errorf("grain rate must be positive, got %d/%d", p.RateNum, p.RateDen)
 	}
 	if p.OnData == nil {
 		return nil, fmt.Errorf("OnData callback is required")
@@ -115,13 +121,31 @@ func NewH264Encoder(p EncoderParams) (*H264Encoder, error) {
 	return e, nil
 }
 
+// defaultIDRPeriod returns half a second of frames, rounded.
+//
+// Not one second. A path is consumed over HLS as well as over WebRTC, and the
+// HLS muxer closes a segment on the first IDR at or past the segment target.
+// A GOP exactly the length of that target therefore lands on the comparison
+// itself, and a fraction of a millisecond decides whether the segment closes
+// now or a whole GOP later: measured on a 30/1 flow, segments alternated
+// between 1.00 s and 2.00 s, and every jump moves the live edge a player has
+// to re-seek to. Half a second of frames bounds the overshoot to half a
+// second, whatever the segment target is set to.
+func defaultIDRPeriod(rateNum, rateDen int64) uint32 {
+	idr := (rateNum + rateDen) / (2 * rateDen)
+	if idr < 1 {
+		return 1
+	}
+	return uint32(idr)
+}
+
 // buildFFmpegArgs assembles the ffmpeg command line from params. Kept
 // separate to keep NewH264Encoder readable and to make these knobs easy to
 // inspect in tests.
 func buildFFmpegArgs(p EncoderParams) []string {
 	idr := p.IDRPeriod
 	if idr == 0 {
-		idr = p.FPS
+		idr = defaultIDRPeriod(p.RateNum, p.RateDen)
 	}
 
 	args := []string{
@@ -130,7 +154,7 @@ func buildFFmpegArgs(p EncoderParams) []string {
 		"-f", "rawvideo",
 		"-pix_fmt", "yuv420p",
 		"-s", fmt.Sprintf("%dx%d", p.Width, p.Height),
-		"-r", strconv.FormatUint(uint64(p.FPS), 10),
+		"-r", fmt.Sprintf("%d/%d", p.RateNum, p.RateDen),
 		"-i", "pipe:0",
 		// Encoder.
 		"-c:v", "libx264",

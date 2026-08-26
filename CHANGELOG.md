@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.3](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.2...mxl-v1.0.0-rc.3) (2026-08-26)
+
+
+### Bug Fixes
+
+* **mxl source:** encode at the flow's declared rate ([#21](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/21)) ([b2c16bd](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/b2c16bdc456fb2902ceed0fe2bcf525c88bfd8b5))
+
 ## [1.0.0-rc.2](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.1...mxl-v1.0.0-rc.2) (2026-08-04)
 
 ### Dependencies
