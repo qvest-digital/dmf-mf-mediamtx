@@ -1,0 +1,8 @@
+# release-please owns these two files and rewrites them on every release, in a
+# style prettier does not accept: "*" list bullets and a blank line after each
+# heading in the changelog, no spaces inside the braces of the manifest.
+# Upstream carries neither file, so its prettier run never met them; the "other"
+# lint job that checks them arrived with the upstream merge. Left unignored, the
+# next release pull request fails lint on content no human wrote.
+CHANGELOG.md
+.github/release-please-manifest.json
