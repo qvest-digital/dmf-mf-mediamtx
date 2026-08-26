@@ -3,11 +3,7 @@ package mxl
 import (
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"strconv"
-	"sync"
-	"syscall"
 )
 
 // EncoderParams configures the H264Encoder. Fields mirror the mxlH264* path
@@ -45,23 +41,12 @@ type EncoderParams struct {
 // NAL unit N+1 has been read, there is an inherent one-frame latency
 // between Encode and the corresponding OnData call.
 type H264Encoder struct {
+	*ffmpegProcess
 	params EncoderParams
-
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
 
 	yuvBuf []byte
 	ySize  int
 	cSize  int
-
-	finalErr error
-
-	terminate chan struct{}
-	done      chan struct{}
-
-	mu     sync.Mutex
-	closed bool
 }
 
 // NewH264Encoder starts an ffmpeg process configured to take raw yuv420p
@@ -82,42 +67,21 @@ func NewH264Encoder(p EncoderParams) (*H264Encoder, error) {
 		p.FFmpegPath = "ffmpeg"
 	}
 
-	args := buildFFmpegArgs(p)
-
-	cmd := exec.Command(p.FFmpegPath, args...) //nolint:gosec // operator-controlled
-	stdin, err := cmd.StdinPipe()
+	proc, err := startFFmpeg(p.FFmpegPath, buildFFmpegArgs(p))
 	if err != nil {
-		return nil, fmt.Errorf("stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-	cmd.Stderr = os.Stderr
-
-	// Run ffmpeg in its own process group so a SIGINT to mediamtx itself
-	// doesn't reach the child and we have a well-defined target for kill.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	err = cmd.Start()
-	if err != nil {
-		return nil, fmt.Errorf("start %s: %w", p.FFmpegPath, err)
+		return nil, err
 	}
 
 	cSize := (int(p.Width) / 2) * (int(p.Height) / 2)
 	e := &H264Encoder{
-		params:    p,
-		cmd:       cmd,
-		stdin:     stdin,
-		stdout:    stdout,
-		yuvBuf:    make([]byte, int(p.Width)*int(p.Height)+2*cSize),
-		ySize:     int(p.Width) * int(p.Height),
-		cSize:     cSize,
-		terminate: make(chan struct{}),
-		done:      make(chan struct{}),
+		ffmpegProcess: proc,
+		params:        p,
+		yuvBuf:        make([]byte, int(p.Width)*int(p.Height)+2*cSize),
+		ySize:         int(p.Width) * int(p.Height),
+		cSize:         cSize,
 	}
-
-	go e.run()
+	proc.readAll = e.readAUs
+	go proc.run()
 	return e, nil
 }
 
@@ -202,82 +166,7 @@ func (e *H264Encoder) Encode(y, cb, cr []byte) error {
 	copy(e.yuvBuf[e.ySize:e.ySize+e.cSize], cb)
 	copy(e.yuvBuf[e.ySize+e.cSize:], cr)
 
-	if _, err := e.stdin.Write(e.yuvBuf); err != nil {
-		return fmt.Errorf("write frame: %w", err)
-	}
-	return nil
-}
-
-// Close shuts the encoder down. Safe to call multiple times; blocks until
-// the encoder goroutine has exited.
-func (e *H264Encoder) Close() {
-	e.mu.Lock()
-	if e.closed {
-		e.mu.Unlock()
-		<-e.done
-		return
-	}
-	e.closed = true
-	e.mu.Unlock()
-
-	close(e.terminate)
-	<-e.done
-}
-
-// Wait blocks until the encoder goroutine exits and returns the terminal
-// error (nil on clean shutdown).
-func (e *H264Encoder) Wait() error {
-	<-e.done
-	return e.finalErr
-}
-
-func (e *H264Encoder) run() {
-	defer close(e.done)
-	e.finalErr = e.runInner()
-}
-
-// runInner is the shutdown choreography: three things can end the encoder --
-// ffmpeg exits on its own, the stdout reader errors, or Close is called.
-// Each branch closes the pipes in an order that lets the other goroutines
-// unblock and reports an appropriate terminal error.
-func (e *H264Encoder) runInner() error {
-	cmdDone := make(chan error, 1)
-	go func() { cmdDone <- e.cmd.Wait() }()
-
-	readDone := make(chan error, 1)
-	go func() { readDone <- e.readAUs() }()
-
-	select {
-	case err := <-cmdDone:
-		// ffmpeg exited unexpectedly; close pipes so the reader unblocks.
-		_ = e.stdin.Close()
-		_ = e.stdout.Close()
-		<-readDone
-		if err != nil {
-			return fmt.Errorf("ffmpeg exited: %w", err)
-		}
-		return fmt.Errorf("ffmpeg exited unexpectedly")
-
-	case err := <-readDone:
-		// stdout reader errored; ask ffmpeg to exit and wait for it.
-		_ = e.stdin.Close()
-		<-cmdDone
-		_ = e.stdout.Close()
-		return err
-
-	case <-e.terminate:
-		// Cooperative shutdown. EOF on stdin is ffmpeg's "flush and exit"
-		// signal; SIGINT to the process group is belt-and-suspenders for
-		// any helper threads ffmpeg may have spawned.
-		_ = e.stdin.Close()
-		if e.cmd.Process != nil {
-			_ = syscall.Kill(-e.cmd.Process.Pid, syscall.SIGINT)
-		}
-		<-cmdDone
-		_ = e.stdout.Close()
-		<-readDone
-		return nil
-	}
+	return e.write(e.yuvBuf)
 }
 
 // readAUs parses ffmpeg's stdout into Annex-B NAL units, groups them into
