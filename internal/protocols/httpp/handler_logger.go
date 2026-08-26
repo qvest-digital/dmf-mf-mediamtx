@@ -3,43 +3,143 @@ package httpp
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httputil"
+	"slices"
+	"strings"
 
 	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
-type loggerWriter struct {
+const (
+	maxRequestBodySizeToLog = 10 * 1024
+)
+
+var requestHeadersToRedact = map[string]struct{}{
+	"Authorization":       {},
+	"Cookie":              {},
+	"Proxy-Authorization": {},
+	"Set-Cookie":          {},
+	"X-Api-Key":           {},
+	"X-Auth-Token":        {},
+}
+
+var requestBodyContentTypeToLog = map[string]struct{}{
+	"application/sdp":                 {},
+	"application/trickle-ice-sdpfrag": {},
+}
+
+func valueOrDefault(value, def string) string {
+	if value != "" {
+		return value
+	}
+	return def
+}
+
+// this is an improvement of httputil.DumpRequest with the following changes:
+// - sensitive headers are redacted
+// - body is truncated to prevent memory exhaustion
+func dumpRequest(req *http.Request) []byte {
+	peek, err := io.ReadAll(io.LimitReader(req.Body, maxRequestBodySizeToLog+1))
+	if err != nil {
+		return nil
+	}
+
+	capped := peek
+	if int64(len(capped)) > maxRequestBodySizeToLog {
+		capped = append([]byte(nil), capped[:maxRequestBodySizeToLog]...)
+		capped = append(capped, []byte("\n\n(truncated body)\n")...)
+	}
+
+	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peek), req.Body))
+
+	var b bytes.Buffer
+
+	reqURI := req.RequestURI
+	if reqURI == "" {
+		reqURI = req.URL.RequestURI()
+	}
+
+	fmt.Fprintf(&b, "%s %s HTTP/%d.%d\r\n", valueOrDefault(req.Method, "GET"),
+		reqURI, req.ProtoMajor, req.ProtoMinor)
+
+	absRequestURI := strings.HasPrefix(req.RequestURI, "http://") || strings.HasPrefix(req.RequestURI, "https://")
+	if !absRequestURI {
+		host := req.Host
+		if host == "" && req.URL != nil {
+			host = req.URL.Host
+		}
+		if host != "" {
+			fmt.Fprintf(&b, "Host: %s\r\n", host)
+		}
+	}
+
+	keys := make([]string, 0, len(req.Header))
+	for k := range req.Header {
+		keys = append(keys, k)
+	}
+
+	slices.Sort(keys)
+
+	for _, k := range keys {
+		for _, v := range req.Header[k] {
+			if _, ok := requestHeadersToRedact[k]; ok {
+				v = "<redacted>"
+			}
+			fmt.Fprintf(&b, "%s: %s\r\n", k, v)
+		}
+	}
+
+	io.WriteString(&b, "\r\n") //nolint:errcheck
+
+	b.Write(capped)
+
+	return b.Bytes()
+}
+
+type responseRecorder struct {
 	w      http.ResponseWriter
 	status int
+	body   []byte
 	size   int
 }
 
-func (w *loggerWriter) Header() http.Header {
+func (w *responseRecorder) Header() http.Header {
 	return w.w.Header()
 }
 
-func (w *loggerWriter) Write(b []byte) (int, error) {
+func (w *responseRecorder) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	w.size += len(b)
+
+	contentType := w.Header().Get("Content-Type")
+	if _, ok := requestBodyContentTypeToLog[contentType]; ok {
+		w.body = append(w.body, b...)
+	} else {
+		w.size += len(b)
+	}
+
 	return w.w.Write(b)
 }
 
-func (w *loggerWriter) WriteHeader(statusCode int) {
+func (w *responseRecorder) WriteHeader(statusCode int) {
 	w.status = statusCode
 	w.w.WriteHeader(statusCode)
 }
 
-func (w *loggerWriter) dump() string {
+func (w *responseRecorder) dump() string {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "%s %d %s\n", "HTTP/1.1", w.status, http.StatusText(w.status))
 	w.w.Header().Write(&buf) //nolint:errcheck
 	buf.Write([]byte("\n"))
-	if w.size > 0 {
+
+	if w.body != nil {
+		buf.Write(w.body)
+	} else if w.size > 0 {
 		fmt.Fprintf(&buf, "(body of %d bytes)", w.size)
 	}
+
 	return buf.String()
 }
 
@@ -50,12 +150,24 @@ type handlerLogger struct {
 }
 
 func (h *handlerLogger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	byts, _ := httputil.DumpRequest(r, true)
-	h.log.Log(logger.Debug, "[conn %v] [c->s] %s", r.RemoteAddr, string(byts))
+	h.log.Log(logger.Debug, "[conn %v] [c->s] %s", r.RemoteAddr, dumpRequest(r))
 
-	logw := &loggerWriter{w: w}
+	resRecorder := &responseRecorder{w: w}
 
-	h.h.ServeHTTP(logw, r)
+	h.h.ServeHTTP(resRecorder, r)
 
-	h.log.Log(logger.Debug, "[conn %v] [s->c] %s", r.RemoteAddr, logw.dump())
+	h.log.Log(logger.Debug, "[conn %v] [s->c] %s", r.RemoteAddr, resRecorder.dump())
+}
+
+// Flush propagates the flush to the wrapped writer, so that handlers streaming
+// a long response (server-sent events) are not held until they return.
+func (w *responseRecorder) Flush() {
+	if f, ok := w.w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (w *responseRecorder) Unwrap() http.ResponseWriter {
+	return w.w
 }

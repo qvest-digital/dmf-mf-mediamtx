@@ -8,7 +8,7 @@ source. The only build output is a container image.
 - Terse. Say the thing, stop. No preamble, no recap, no restating the task.
 - No filler adjectives (robust, seamless, powerful, comprehensive). State what
   the code does, not how good it is.
-- Comments explain *why*, not *what*. Delete comments that restate the code.
+- Comments explain _why_, not _what_. Delete comments that restate the code.
   Revalidate a comment against its context before leaving it in place; remove
   stale references and accounts of how the code came to look this way.
 - Write declarative facts. No personal pronouns. Don't address a reader.
@@ -69,7 +69,11 @@ three packages that reach it -- the MXL source, the static source registry
 that imports it, and `internal/core` through the registry -- and skips exactly
 those.
 
-Two upstream-owned files carry fork state and will conflict on an upstream
-merge: `api/openapi.yaml` lists the `mxl*` path properties and `mxlSource`,
-and the `internal/conf` fixture asserts the fork's path defaults. They are
-what the go2api linter and the conf test compare against.
+`api/openapi.yaml` is generated from `internal/apidocsgen`, which reflects
+over `conf.Path` and `defs.APIPathSourceType`, so the `mxl*` path properties
+and `mxlSource` appear in it without being written there. `make apidocs`
+regenerates it and `make lint-apidocs` fails when the committed file has
+drifted.
+
+One upstream-owned file carries fork state and will conflict on an upstream
+merge: the `internal/conf` fixture asserts the fork's path defaults.

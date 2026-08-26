@@ -17,14 +17,13 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/pion/rtp"
+	"github.com/qvest-digital/go-mxl/mxl"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/stream"
 	"github.com/bluenviron/mediamtx/internal/unit"
-
-	mxl "github.com/qvest-digital/go-mxl/mxl"
 )
 
 const (

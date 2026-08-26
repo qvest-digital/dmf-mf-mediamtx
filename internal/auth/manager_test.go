@@ -12,9 +12,10 @@ import (
 	"time"
 
 	"github.com/MicahParks/jwkset"
-	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bluenviron/mediamtx/internal/conf"
 )
 
 var testTLSCertPub = []byte(`-----BEGIN CERTIFICATE-----
@@ -196,10 +197,11 @@ func TestAuthInternal(t *testing.T) {
 
 				// first request with empty credentials
 				_, err := m.Authenticate(&Request{
-					Action:      req.Action,
-					Path:        req.Path,
-					Credentials: &Credentials{},
-					IP:          req.IP,
+					Action:               req.Action,
+					Path:                 req.Path,
+					Credentials:          &Credentials{},
+					IP:                   req.IP,
+					EnableAskCredentials: true,
 				})
 				require.Equal(t, &Error{
 					Wrapped:        err.Wrapped,
@@ -274,14 +276,15 @@ func TestAuthHTTP(t *testing.T) {
 					require.Equal(t, "/auth", r.URL.Path)
 
 					var in struct {
-						IP       string `json:"ip"`
-						User     string `json:"user"`
-						Password string `json:"password"`
-						Path     string `json:"path"`
-						Protocol string `json:"protocol"`
-						ID       string `json:"id"`
-						Action   string `json:"action"`
-						Query    string `json:"query"`
+						IP        string `json:"ip"`
+						User      string `json:"user"`
+						Password  string `json:"password"`
+						Path      string `json:"path"`
+						Protocol  string `json:"protocol"`
+						ID        string `json:"id"`
+						Action    string `json:"action"`
+						Query     string `json:"query"`
+						UserAgent string `json:"userAgent"`
 					}
 					err := json.NewDecoder(r.Body).Decode(&in)
 					require.NoError(t, err)
@@ -293,6 +296,7 @@ func TestAuthHTTP(t *testing.T) {
 						in.Protocol != "rtsp" ||
 						(firstReceived && in.ID == "") ||
 						in.Action != "publish" ||
+						in.UserAgent != "testagent" ||
 						(in.Query != "user=testreader&pass=testpass&param=value" &&
 							in.Query != "user=testpublisher&pass=testpass&param=value" &&
 							in.Query != "param=value") {
@@ -319,10 +323,11 @@ func TestAuthHTTP(t *testing.T) {
 
 			if outcome == "ok" {
 				req = &Request{
-					Action:   conf.AuthActionPublish,
-					Path:     "teststream",
-					Query:    "param=value",
-					Protocol: ProtocolRTSP,
+					Action:    conf.AuthActionPublish,
+					Path:      "teststream",
+					Query:     "param=value",
+					Protocol:  ProtocolRTSP,
+					UserAgent: "testagent",
 					Credentials: &Credentials{
 						User: "testpublisher",
 						Pass: "testpass",
@@ -331,10 +336,11 @@ func TestAuthHTTP(t *testing.T) {
 				}
 			} else {
 				req = &Request{
-					Action:   conf.AuthActionPublish,
-					Path:     "teststream",
-					Query:    "param=value",
-					Protocol: ProtocolRTSP,
+					Action:    conf.AuthActionPublish,
+					Path:      "teststream",
+					Query:     "param=value",
+					Protocol:  ProtocolRTSP,
+					UserAgent: "testagent",
 					Credentials: &Credentials{
 						User: "invalid",
 						Pass: "testpass",
@@ -345,10 +351,11 @@ func TestAuthHTTP(t *testing.T) {
 
 			// first request with empty credentials
 			_, err2 := m.Authenticate(&Request{
-				Action:      req.Action,
-				Path:        req.Path,
-				Credentials: &Credentials{},
-				IP:          req.IP,
+				Action:               req.Action,
+				Path:                 req.Path,
+				Credentials:          &Credentials{},
+				IP:                   req.IP,
+				EnableAskCredentials: true,
 			})
 			require.Equal(t, &Error{
 				Wrapped:        err2.Wrapped,
@@ -577,10 +584,11 @@ func TestAuthJWT(t *testing.T) {
 
 			// first request with empty credentials
 			_, err2 := m.Authenticate(&Request{
-				Action:      req.Action,
-				Path:        req.Path,
-				Credentials: &Credentials{},
-				IP:          req.IP,
+				Action:               req.Action,
+				Path:                 req.Path,
+				Credentials:          &Credentials{},
+				IP:                   req.IP,
+				EnableAskCredentials: true,
 			})
 			require.Equal(t, &Error{
 				Wrapped:        err2.Wrapped,

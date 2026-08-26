@@ -9,21 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+
 	"github.com/bluenviron/mediamtx/internal/auth"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/formatlabel"
-	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/test"
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/require"
 )
-
-func ptrOf[T any](v T) *T {
-	p := new(T)
-	*p = v
-	return p
-}
 
 type dummyPathManager struct{}
 
@@ -39,7 +33,7 @@ func (dummyPathManager) APIPathsList() (*defs.APIPathList, error) {
 				ID:   "123324354",
 			},
 			Ready:                true,
-			ReadyTime:            ptrOf(time.Date(2003, 11, 4, 23, 15, 7, 0, time.UTC)),
+			ReadyTime:            new(time.Date(2003, 11, 4, 23, 15, 7, 0, time.UTC)),
 			Tracks:               []defs.APIPathTrackCodec{formatlabel.H264, formatlabel.H265},
 			InboundBytes:         123,
 			OutboundBytes:        456,
@@ -66,6 +60,34 @@ func (dummyPathManager) APIPathsList() (*defs.APIPathList, error) {
 
 func (dummyPathManager) APIPathsGet(string) (*defs.APIPath, error) {
 	panic("unused")
+}
+
+func (dummyPathManager) APIForwardDestList(string) (*defs.APIForwardDestList, error) {
+	return &defs.APIForwardDestList{}, nil
+}
+
+func (dummyPathManager) APIForwardDestGet(string, uuid.UUID) (*defs.APIForwardDest, error) {
+	panic("unused")
+}
+
+type forwardPathManager struct {
+	dummyPathManager
+}
+
+func (forwardPathManager) APIForwardDestList(string) (*defs.APIForwardDestList, error) {
+	return &defs.APIForwardDestList{
+		ItemCount: 1,
+		PageCount: 1,
+		Items: []defs.APIForwardDest{{
+			ID:            uuid.MustParse("5b9a82ca-3cb8-46d1-a80b-6b716ccfcafe"),
+			Pos:           1,
+			Created:       time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC),
+			Conf:          conf.ForwardDest{Dest: "rtmp://example.com/live/stream"},
+			Protocol:      defs.APIForwardDestProtocolRTMP,
+			State:         defs.APIForwardDestStateForwarding,
+			OutboundBytes: 321,
+		}},
+	}, nil
 }
 
 type dummyHLSServer struct{}
@@ -334,6 +356,33 @@ func (dummyWebRTCServer) APISessionsKick(uuid.UUID) error {
 	panic("unused")
 }
 
+type dummyMoQServer struct{}
+
+func (dummyMoQServer) APISessionsList() (*defs.APIMoQSessionList, error) {
+	return &defs.APIMoQSessionList{
+		ItemCount: 1,
+		PageCount: 1,
+		Items: []defs.APIMoQSession{{
+			ID:            uuid.MustParse("b47ac10b-58cc-4372-a567-0e02b2c3d479"),
+			Created:       time.Date(2003, 11, 4, 23, 15, 7, 0, time.UTC),
+			RemoteAddr:    "127.0.0.2:3456",
+			State:         defs.APIMoQSessionStatePublish,
+			Path:          "mypath",
+			Version:       defs.APIMoQVersionDraft19,
+			InboundBytes:  321,
+			OutboundBytes: 654,
+		}},
+	}, nil
+}
+
+func (dummyMoQServer) APISessionsGet(uuid.UUID) (*defs.APIMoQSession, error) {
+	panic("unused")
+}
+
+func (dummyMoQServer) APISessionsKick(uuid.UUID) error {
+	panic("unused")
+}
+
 type emptyPathManager struct{}
 
 func (emptyPathManager) APIPathsList() (*defs.APIPathList, error) {
@@ -341,6 +390,14 @@ func (emptyPathManager) APIPathsList() (*defs.APIPathList, error) {
 }
 
 func (emptyPathManager) APIPathsGet(string) (*defs.APIPath, error) {
+	panic("unused")
+}
+
+func (emptyPathManager) APIForwardDestList(string) (*defs.APIForwardDestList, error) {
+	return &defs.APIForwardDestList{}, nil
+}
+
+func (emptyPathManager) APIForwardDestGet(string, uuid.UUID) (*defs.APIForwardDest, error) {
 	panic("unused")
 }
 
@@ -416,6 +473,20 @@ func (emptyWebRTCServer) APISessionsKick(uuid.UUID) error {
 	panic("unused")
 }
 
+type emptyMoQServer struct{}
+
+func (emptyMoQServer) APISessionsList() (*defs.APIMoQSessionList, error) {
+	return &defs.APIMoQSessionList{}, nil
+}
+
+func (emptyMoQServer) APISessionsGet(uuid.UUID) (*defs.APIMoQSession, error) {
+	panic("unused")
+}
+
+func (emptyMoQServer) APISessionsKick(uuid.UUID) error {
+	panic("unused")
+}
+
 func TestPreflightRequest(t *testing.T) {
 	m := Metrics{
 		Address:      "localhost:9998",
@@ -448,7 +519,6 @@ func TestPreflightRequest(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, "*", res.Header.Get("Access-Control-Allow-Origin"))
-	require.Equal(t, "true", res.Header.Get("Access-Control-Allow-Credentials"))
 	require.Equal(t, "OPTIONS, GET", res.Header.Get("Access-Control-Allow-Methods"))
 	require.Equal(t, "Authorization", res.Header.Get("Access-Control-Allow-Headers"))
 	require.Equal(t, byts, []byte{})
@@ -485,6 +555,7 @@ func TestMetrics(t *testing.T) {
 	m.SetRTMPSServer(&dummyRTMPServer{})
 	m.SetSRTServer(&dummySRTServer{})
 	m.SetWebRTCServer(&dummyWebRTCServer{})
+	m.SetMoQServer(&dummyMoQServer{})
 
 	tr := &http.Transport{}
 	defer tr.CloseIdleConnections()
@@ -827,6 +898,14 @@ func TestMetrics(t *testing.T) {
 			"remoteAddr=\"127.0.0.1:3455\",state=\"read\"} 123\n"+
 			"webrtc_sessions_rtcp_packets_sent{id=\"f47ac10b-58cc-4372-a567-0e02b2c3d479\",path=\"mypath\","+
 			"remoteAddr=\"127.0.0.1:3455\",state=\"read\"} 456\n"+
+			"\n"+
+			"# MoQ sessions\n"+
+			"moq_sessions{id=\"b47ac10b-58cc-4372-a567-0e02b2c3d479\",path=\"mypath\","+
+			"remoteAddr=\"127.0.0.2:3456\",state=\"publish\"} 1\n"+
+			"moq_sessions_inbound_bytes{id=\"b47ac10b-58cc-4372-a567-0e02b2c3d479\",path=\"mypath\","+
+			"remoteAddr=\"127.0.0.2:3456\",state=\"publish\"} 321\n"+
+			"moq_sessions_outbound_bytes{id=\"b47ac10b-58cc-4372-a567-0e02b2c3d479\",path=\"mypath\","+
+			"remoteAddr=\"127.0.0.2:3456\",state=\"publish\"} 654\n"+
 			"\n",
 		string(byts))
 
@@ -851,6 +930,7 @@ func TestZeroMetricsFallback(t *testing.T) {
 	m.SetRTSPServer(&emptyRTSPServer{})
 	m.SetSRTServer(&emptySRTServer{})
 	m.SetWebRTCServer(&emptyWebRTCServer{})
+	m.SetMoQServer(&emptyMoQServer{})
 
 	tr := &http.Transport{}
 	defer tr.CloseIdleConnections()
@@ -1001,6 +1081,49 @@ func TestZeroMetricsFallback(t *testing.T) {
 			"webrtc_sessions_rtp_packets_jitter 0\n"+
 			"webrtc_sessions_rtcp_packets_received 0\n"+
 			"webrtc_sessions_rtcp_packets_sent 0\n"+
+			"\n"+
+			"# MoQ sessions\n"+
+			"moq_sessions 0\n"+
+			"moq_sessions_inbound_bytes 0\n"+
+			"moq_sessions_outbound_bytes 0\n"+
+			"\n",
+		string(byts))
+}
+
+func TestForwardMetrics(t *testing.T) {
+	m := Metrics{
+		Address:      "localhost:9998",
+		AllowOrigins: []string{"*"},
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		AuthManager:  test.NilAuthManager,
+		Parent:       test.NilLogger,
+	}
+	err := m.Initialize()
+	require.NoError(t, err)
+	defer m.Close()
+
+	m.SetPathManager(&forwardPathManager{})
+
+	tr := &http.Transport{}
+	defer tr.CloseIdleConnections()
+	hc := &http.Client{Transport: tr}
+
+	res, err := hc.Get("http://localhost:9998/metrics?type=forward_dests")
+	require.NoError(t, err)
+	defer res.Body.Close()
+
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
+	byts, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+
+	require.Equal(t,
+		"# Forward destinations\n"+
+			"forward_dests{id=\"5b9a82ca-3cb8-46d1-a80b-6b716ccfcafe\","+
+			"path=\"mypath\",protocol=\"rtmp\",state=\"forwarding\"} 1\n"+
+			"forward_dests_outbound_bytes{id=\"5b9a82ca-3cb8-46d1-a80b-6b716ccfcafe\",path=\"mypath\","+
+			"protocol=\"rtmp\",state=\"forwarding\"} 321\n"+
 			"\n",
 		string(byts))
 }
@@ -1018,6 +1141,7 @@ func TestFilter(t *testing.T) {
 		"rtmps_conn",
 		"srt_conn",
 		"webrtc_session",
+		"moq_session",
 	} {
 		t.Run(ca, func(t *testing.T) {
 			m := Metrics{
@@ -1040,6 +1164,7 @@ func TestFilter(t *testing.T) {
 			m.SetRTMPSServer(&dummyRTMPServer{})
 			m.SetSRTServer(&dummySRTServer{})
 			m.SetWebRTCServer(&dummyWebRTCServer{})
+			m.SetMoQServer(&dummyMoQServer{})
 
 			tr := &http.Transport{}
 			defer tr.CloseIdleConnections()
@@ -1070,6 +1195,8 @@ func TestFilter(t *testing.T) {
 				u += "?srt_conn=a0b1c2d3-e4f5-6789-abcd-ef0123456789"
 			case "webrtc_session":
 				u += "?webrtc_session=f47ac10b-58cc-4372-a567-0e02b2c3d479"
+			case "moq_session":
+				u += "?moq_session=b47ac10b-58cc-4372-a567-0e02b2c3d479"
 			}
 
 			res, err := hc.Get(u)
@@ -1441,6 +1568,17 @@ func TestFilter(t *testing.T) {
 						`webrtc_sessions_rtcp_packets_sent{id="f47ac10b-58cc-4372-a567-0e02b2c3d479",`+
 						`path="mypath",remoteAddr="127.0.0.1:3455",state="read"} 456`+"\n\n",
 					string(byts))
+
+			case "moq_session":
+				require.Equal(t,
+					"# MoQ sessions\n"+
+						`moq_sessions{id="b47ac10b-58cc-4372-a567-0e02b2c3d479",`+
+						`path="mypath",remoteAddr="127.0.0.2:3456",state="publish"} 1`+"\n"+
+						`moq_sessions_inbound_bytes{id="b47ac10b-58cc-4372-a567-0e02b2c3d479",`+
+						`path="mypath",remoteAddr="127.0.0.2:3456",state="publish"} 321`+"\n"+
+						`moq_sessions_outbound_bytes{id="b47ac10b-58cc-4372-a567-0e02b2c3d479",`+
+						`path="mypath",remoteAddr="127.0.0.2:3456",state="publish"} 654`+"\n\n",
+					string(byts))
 			}
 		})
 	}
@@ -1469,6 +1607,7 @@ func TestFilterByType(t *testing.T) {
 			m.SetRTMPSServer(&dummyRTMPServer{})
 			m.SetSRTServer(&dummySRTServer{})
 			m.SetWebRTCServer(&dummyWebRTCServer{})
+			m.SetMoQServer(&dummyMoQServer{})
 
 			tr := &http.Transport{}
 			defer tr.CloseIdleConnections()
@@ -1598,8 +1737,6 @@ func TestFilterByType(t *testing.T) {
 }
 
 func TestAuthError(t *testing.T) {
-	n := 0
-
 	m := Metrics{
 		Address:      "localhost:9998",
 		AllowOrigins: []string{"*"},
@@ -1613,14 +1750,7 @@ func TestAuthError(t *testing.T) {
 				return "", &auth.Error{Wrapped: fmt.Errorf("auth error")}
 			},
 		},
-		Parent: test.Logger(func(l logger.Level, s string, i ...any) {
-			if l == logger.Info {
-				if n == 1 {
-					require.Regexp(t, "failed to authenticate: auth error$", fmt.Sprintf(s, i...))
-				}
-				n++
-			}
-		}),
+		Parent: test.NilLogger,
 	}
 	err := m.Initialize()
 	require.NoError(t, err)
@@ -1642,8 +1772,6 @@ func TestAuthError(t *testing.T) {
 	defer res.Body.Close()
 
 	require.Equal(t, http.StatusUnauthorized, res.StatusCode)
-
-	require.Equal(t, 2, n)
 }
 
 func TestMetricsConcurrentSettersAndReads(t *testing.T) {
@@ -1667,6 +1795,7 @@ func TestMetricsConcurrentSettersAndReads(t *testing.T) {
 	m.SetRTMPSServer(&dummyRTMPServer{})
 	m.SetSRTServer(&dummySRTServer{})
 	m.SetWebRTCServer(&dummyWebRTCServer{})
+	m.SetMoQServer(&dummyMoQServer{})
 
 	tr := &http.Transport{}
 	defer tr.CloseIdleConnections()
@@ -1694,6 +1823,7 @@ func TestMetricsConcurrentSettersAndReads(t *testing.T) {
 		m.SetRTMPSServer(&dummyRTMPServer{})
 		m.SetSRTServer(&dummySRTServer{})
 		m.SetWebRTCServer(&dummyWebRTCServer{})
+		m.SetMoQServer(&dummyMoQServer{})
 
 		m.SetHLSServer(nil)
 		m.SetRTSPServer(nil)
@@ -1702,6 +1832,7 @@ func TestMetricsConcurrentSettersAndReads(t *testing.T) {
 		m.SetRTMPSServer(nil)
 		m.SetSRTServer(nil)
 		m.SetWebRTCServer(nil)
+		m.SetMoQServer(nil)
 	}
 
 	readers.Wait()
@@ -1758,6 +1889,7 @@ func BenchmarkFullMetricsHandler(b *testing.B) {
 	m.SetRTMPSServer(&dummyRTMPServer{})
 	m.SetSRTServer(&dummySRTServer{})
 	m.SetWebRTCServer(&dummyWebRTCServer{})
+	m.SetMoQServer(&dummyMoQServer{})
 
 	tr := &http.Transport{}
 	defer tr.CloseIdleConnections()

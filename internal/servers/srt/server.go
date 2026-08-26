@@ -8,8 +8,10 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/bluenviron/gortsplib/v5/pkg/readbuffer"
 	srt "github.com/datarhei/gosrt"
 	"github.com/google/uuid"
 
@@ -79,6 +81,7 @@ type Server struct {
 	ReadTimeout         conf.Duration
 	WriteTimeout        conf.Duration
 	UDPMaxPayloadSize   int
+	UDPReadBufferSize   uint
 	RunOnConnect        string
 	RunOnConnectRestart bool
 	RunOnDisconnect     string
@@ -109,6 +112,13 @@ func (s *Server) Initialize() error {
 	conf.PeerIdleTimeout = time.Duration(s.ReadTimeout)
 	conf.PayloadSize = uint32(srtMaxPayloadSize(s.UDPMaxPayloadSize))
 
+	if s.UDPReadBufferSize > 0 {
+		bufSize := int(s.UDPReadBufferSize)
+		conf.ListenerControl = func(_, _ string, rawConn syscall.RawConn) error {
+			return readbuffer.SetReadBufferRaw(rawConn, bufSize)
+		}
+	}
+
 	var err error
 	s.ln, err = srt.Listen("srt", s.Address, conf)
 	if err != nil {
@@ -125,7 +135,7 @@ func (s *Server) Initialize() error {
 	s.chAPIConnsGet = make(chan serverAPIConnsGetReq)
 	s.chAPIConnsKick = make(chan serverAPIConnsKickReq)
 
-	s.Log(logger.Info, "listener opened on "+s.Address+" (UDP)")
+	s.Log(logger.Info, "started with listener on "+s.Address+" (UDP/SRT)")
 
 	l := &listener{
 		ln:     s.ln,
@@ -151,7 +161,7 @@ func (s *Server) Log(level logger.Level, format string, args ...any) {
 
 // Close closes the server.
 func (s *Server) Close() {
-	s.Log(logger.Info, "listener is closing")
+	s.Log(logger.Info, "closing")
 
 	if !interfaceIsEmpty(s.Metrics) {
 		s.Metrics.SetSRTServer(nil)

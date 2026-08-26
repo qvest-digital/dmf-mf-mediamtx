@@ -335,16 +335,18 @@ type Conf struct {
 	RTSPServerCert        string           `json:"rtspServerCert"`
 	AuthMethods           *RTSPAuthMethods `json:"authMethods,omitempty" deprecated:"true"`
 	RTSPAuthMethods       RTSPAuthMethods  `json:"rtspAuthMethods"`
+	RTSPTrustedProxies    IPNetworks       `json:"rtspTrustedProxies"`
 	RTSPUDPReadBufferSize *uint            `json:"rtspUDPReadBufferSize,omitempty" deprecated:"true"`
 
 	// RTMP server
-	RTMP           bool       `json:"rtmp"`
-	RTMPDisable    *bool      `json:"rtmpDisable,omitempty" deprecated:"true"`
-	RTMPEncryption Encryption `json:"rtmpEncryption"`
-	RTMPAddress    string     `json:"rtmpAddress"`
-	RTMPSAddress   string     `json:"rtmpsAddress"`
-	RTMPServerKey  string     `json:"rtmpServerKey"`
-	RTMPServerCert string     `json:"rtmpServerCert"`
+	RTMP               bool       `json:"rtmp"`
+	RTMPDisable        *bool      `json:"rtmpDisable,omitempty" deprecated:"true"`
+	RTMPEncryption     Encryption `json:"rtmpEncryption"`
+	RTMPAddress        string     `json:"rtmpAddress"`
+	RTMPSAddress       string     `json:"rtmpsAddress"`
+	RTMPServerKey      string     `json:"rtmpServerKey"`
+	RTMPServerCert     string     `json:"rtmpServerCert"`
+	RTMPTrustedProxies IPNetworks `json:"rtmpTrustedProxies"`
 
 	// HLS server
 	HLS                bool       `json:"hls"`
@@ -394,6 +396,18 @@ type Conf struct {
 	SRT        bool   `json:"srt"`
 	SRTAddress string `json:"srtAddress"`
 
+	// MoQ server
+	MoQ               bool       `json:"moq"`
+	MoQHTTP2Address   string     `json:"moqHTTP2Address"`
+	MoQHTTP3Address   string     `json:"moqHTTP3Address"`
+	MoQQUICAddress    string     `json:"moqQUICAddress"`
+	MoQServerKey      string     `json:"moqServerKey"`
+	MoQServerCert     string     `json:"moqServerCert"`
+	MoQAllowOrigins   []string   `json:"moqAllowOrigins"`
+	MoQTrustedProxies IPNetworks `json:"moqTrustedProxies"`
+	MoQHTTPS2Address  *string    `json:"moqHTTPS2Address,omitempty" deprecated:"true"`
+	MoQHTTPS3Address  *string    `json:"moqHTTPS3Address,omitempty" deprecated:"true"`
+
 	// Record (deprecated)
 	Record                *bool         `json:"record,omitempty" deprecated:"true"`
 	RecordPath            *string       `json:"recordPath,omitempty" deprecated:"true"`
@@ -425,17 +439,6 @@ func (conf *Conf) setDefaults() {
 	// Authentication
 	conf.AuthMethod = AuthMethodInternal
 	conf.AuthInternalUsers = defaultAuthInternalUsers
-	conf.AuthHTTPExclude = []AuthInternalUserPermission{
-		{
-			Action: AuthActionAPI,
-		},
-		{
-			Action: AuthActionMetrics,
-		},
-		{
-			Action: AuthActionPprof,
-		},
-	}
 	conf.AuthJWTClaimKey = "mediamtx_permissions"
 
 	// Control API
@@ -521,6 +524,15 @@ func (conf *Conf) setDefaults() {
 	// SRT server
 	conf.SRT = true
 	conf.SRTAddress = ":8890"
+
+	// MoQ server
+	conf.MoQ = true
+	conf.MoQHTTP2Address = ":8892"
+	conf.MoQHTTP3Address = ":8892"
+	conf.MoQQUICAddress = ":8893"
+	conf.MoQServerKey = "auto.key"
+	conf.MoQServerCert = "auto.crt"
+	conf.MoQAllowOrigins = []string{"*"}
 
 	conf.PathDefaults.setDefaults()
 }
@@ -974,10 +986,11 @@ func (conf *Conf) Validate(l logger.Writer) error {
 			"and has been replaced with 'webrtcICEServers2'")
 
 		for _, server := range *conf.WebRTCICEServers {
-			parts := strings.Split(server, ":")
-			if len(parts) == 5 {
+			// old format: scheme:username:password:hostport; SplitN avoids splitting IPv6 colons
+			parts := strings.SplitN(server, ":", 4)
+			if len(parts) == 4 {
 				conf.WebRTCICEServers2 = append(conf.WebRTCICEServers2, WebRTCICEServer{
-					URL:      parts[0] + ":" + parts[3] + ":" + parts[4],
+					URL:      parts[0] + ":" + parts[3],
 					Username: parts[1],
 					Password: parts[2],
 				})
@@ -1021,6 +1034,22 @@ func (conf *Conf) Validate(l logger.Writer) error {
 				return fmt.Errorf("at least one between 'webrtcIPsFromInterfaces' or 'webrtcAdditionalHosts' must be filled")
 			}
 		}
+	}
+
+	if conf.MoQHTTPS2Address != nil {
+		l.Log(logger.Warn, "parameter 'moqHTTPS2Address' is deprecated "+
+			"and has been replaced with 'moqHTTP2Address'")
+		conf.MoQHTTP2Address = *conf.MoQHTTPS2Address
+	}
+
+	if conf.MoQHTTPS3Address != nil {
+		l.Log(logger.Warn, "parameter 'moqHTTPS3Address' is deprecated "+
+			"and has been replaced with 'moqHTTP3Address'")
+		conf.MoQHTTP3Address = *conf.MoQHTTPS3Address
+	}
+
+	if conf.MoQ && conf.MoQQUICAddress == "" {
+		return fmt.Errorf("'moqQUICAddress' must be set when MoQ is enabled")
 	}
 
 	// Record (deprecated)

@@ -3,6 +3,7 @@ package rtsp
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"time"
 
@@ -138,6 +139,12 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			uint16(params.Conf.RTSPUDPSourcePortRange[1]),
 		},
 		OnRequest: func(req *base.Request) {
+			if params.Conf.RTSPScale != "" && req.Method == base.Play {
+				if req.Header == nil {
+					req.Header = base.Header{}
+				}
+				req.Header["Scale"] = base.HeaderValue{params.Conf.RTSPScale}
+			}
 			s.Log(logger.Debug, "[c->s] %v", req)
 		},
 		OnResponse: func(res *base.Response) {
@@ -187,16 +194,35 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			Prefix: u.Scheme + "_source_conn",
 		}).Do
 
-		c.ListenPacket = (&packetdumper.ListenPacket{
-			Prefix: u.Scheme + "_source_packet_conn",
-		}).Do
-
 		c.DialTLSContext = (&packetdumper.DialTLSContext{
 			DialContext: c.DialContext,
 			TLSConfig:   tlsConfig,
 		}).Do
 	} else {
 		c.TLSConfig = tlsConfig
+	}
+
+	c.ListenPacket = func(network, address string) (net.PacketConn, error) {
+		pc, err2 := net.ListenPacket(network, address)
+		if err2 != nil {
+			return nil, err2
+		}
+
+		if s.DumpPackets {
+			pc2 := &packetdumper.PacketConn{
+				Wrapped: pc,
+				Prefix:  u.Scheme + "_source_packet_conn",
+			}
+			err2 = pc2.Initialize()
+			if err2 != nil {
+				pc.Close() //nolint:errcheck
+				return nil, err2
+			}
+
+			pc = pc2
+		}
+
+		return pc, nil
 	}
 
 	err = c.Start()

@@ -7,6 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
 	"github.com/bluenviron/mediamtx/internal/auth"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
@@ -15,8 +18,6 @@ import (
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
 	"github.com/bluenviron/mediamtx/internal/stream"
 	"github.com/bluenviron/mediamtx/internal/unit"
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 type sessionServer interface {
@@ -38,6 +39,7 @@ type session struct {
 	created         time.Time
 	query           string
 	user            string
+	userAgent       string
 	lastRequestTime atomic.Int64
 	bytesSent       atomic.Uint64
 	path            defs.Path
@@ -53,20 +55,26 @@ func (s *session) initialize(ctx *gin.Context) error {
 	s.ip, _, _ = net.SplitHostPort(s.remoteAddr)
 	s.created = time.Now()
 	s.query = ctx.Request.URL.RawQuery
+	s.userAgent = ctx.Request.UserAgent()
 	s.lastRequestTime.Store(time.Now().UnixNano())
 
 	accessReq := defs.PathAccessRequest{
-		Name:    s.pathName,
-		Query:   s.query,
-		Publish: false,
-		Proto:   auth.ProtocolHLS,
-		ID:      &s.uuid,
-		IP:      net.ParseIP(ctx.ClientIP()),
+		Name:                 s.pathName,
+		Query:                s.query,
+		Publish:              false,
+		UserAgent:            s.userAgent,
+		Proto:                auth.ProtocolHLS,
+		ID:                   &s.uuid,
+		IP:                   net.ParseIP(ctx.ClientIP()),
+		EnableAskCredentials: true,
 	}
+
 	if s.isCDN {
 		accessReq.SkipAuth = true
+		s.Log(logger.Info, "created by %s (CDN)", s.remoteAddr)
 	} else {
 		accessReq.Credentials = httpp.Credentials(ctx.Request)
+		s.Log(logger.Info, "created by %s", s.remoteAddr)
 	}
 
 	res, err := s.pathManager.AddReader(defs.PathAddReaderReq{
@@ -105,8 +113,9 @@ func (s *session) initialize(ctx *gin.Context) error {
 		Parent: s,
 	}
 
-	// all of this is needed to allow Stream to increase outbound bytes for every HLS session
-	for _, medi := range res.Stream.Desc.Medias {
+	// this is needed to increase stream outbound bytes for every HLS session,
+	// even if HLS sessions are not directly attached to streams (they are through muxers).
+	for _, medi := range res.Stream.OrigDesc.Medias {
 		for _, forma := range medi.Formats {
 			if slices.Contains(muxerFormats, forma) {
 				s.reader.OnData(medi, forma, func(_ *unit.Unit) error {
@@ -118,11 +127,7 @@ func (s *session) initialize(ctx *gin.Context) error {
 
 	res.Stream.AddReader(s.reader)
 
-	if s.isCDN {
-		s.Log(logger.Info, "created by %s (CDN), reading from muxer '%s'", s.remoteAddr, s.pathName)
-	} else {
-		s.Log(logger.Info, "created by %s, reading from muxer '%s'", s.remoteAddr, s.pathName)
-	}
+	s.Log(logger.Info, "is reading from muxer '%s'", s.pathName)
 
 	s.onUnreadHook = hooks.OnRead(hooks.OnReadParams{
 		Logger:          s,
@@ -167,6 +172,7 @@ func (s *session) apiItem() *defs.APIHLSSession {
 		Path:          s.pathName,
 		Query:         s.query,
 		User:          s.user,
+		UserAgent:     s.userAgent,
 		IsCDN:         s.isCDN,
 		OutboundBytes: outboundBytes,
 	}

@@ -1,4 +1,4 @@
-# Proxy
+# Proxy requests
 
 The server allows to proxy incoming requests to other servers or cameras. This is useful to expose servers or cameras behind a NAT. Edit `mediamtx.yml` and replace everything inside section `paths` with the following content:
 
@@ -11,4 +11,4 @@ paths:
     sourceOnDemand: yes
 ```
 
-All requests addressed to `rtsp://server:8854/a` will be forwarded to `rtsp://other-server:8854/a` and so on.
+All requests addressed to `rtsp://mediamtx:8554/a` will be forwarded to `rtsp://other-server:8554/a` and so on.

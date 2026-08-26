@@ -43,9 +43,10 @@ func TestRecorder(t *testing.T) {
 			Formats: []rtspformat.Format{&rtspformat.MPEG4Audio{
 				PayloadTyp: 96,
 				Config: &mpeg4audio.AudioSpecificConfig{
-					Type:         2,
-					SampleRate:   44100,
-					ChannelCount: 2,
+					Type:          2,
+					SampleRate:    44100,
+					ChannelConfig: 2,
+					ChannelCount:  2, //nolint:staticcheck
 				},
 				SizeLength:       13,
 				IndexLength:      3,
@@ -130,7 +131,7 @@ func TestRecorder(t *testing.T) {
 	for _, ca := range []string{"fmp4", "mpegts"} {
 		t.Run(ca, func(t *testing.T) {
 			strm := &stream.Stream{
-				Desc:              desc,
+				OrigDesc:          desc,
 				WriteQueueSize:    512,
 				RTPMaxPayloadSize: 1450,
 				Parent:            test.NilLogger,
@@ -280,7 +281,7 @@ func TestRecorder(t *testing.T) {
 								Config: mpeg4audio.AudioSpecificConfig{
 									Type:          2,
 									SampleRate:    44100,
-									ChannelCount:  2,
+									ChannelCount:  2, //nolint:staticcheck
 									ChannelConfig: 2,
 								},
 							},
@@ -411,9 +412,10 @@ func TestRecorderFMP4NegativeInitialDTS(t *testing.T) {
 			Formats: []rtspformat.Format{&rtspformat.MPEG4Audio{
 				PayloadTyp: 96,
 				Config: &mpeg4audio.AudioSpecificConfig{
-					Type:         2,
-					SampleRate:   44100,
-					ChannelCount: 2,
+					Type:          2,
+					SampleRate:    44100,
+					ChannelConfig: 2,
+					ChannelCount:  2, //nolint:staticcheck
 				},
 				SizeLength:       13,
 				IndexLength:      3,
@@ -423,7 +425,7 @@ func TestRecorderFMP4NegativeInitialDTS(t *testing.T) {
 	}}
 
 	strm := &stream.Stream{
-		Desc:              desc,
+		OrigDesc:          desc,
 		WriteQueueSize:    512,
 		RTPMaxPayloadSize: 1450,
 		Parent:            test.NilLogger,
@@ -504,9 +506,10 @@ func TestRecorderFMP4NegativeDTSDiff(t *testing.T) {
 			Formats: []rtspformat.Format{&rtspformat.MPEG4Audio{
 				PayloadTyp: 96,
 				Config: &mpeg4audio.AudioSpecificConfig{
-					Type:         2,
-					SampleRate:   44100,
-					ChannelCount: 2,
+					Type:          2,
+					SampleRate:    44100,
+					ChannelConfig: 2,
+					ChannelCount:  2, //nolint:staticcheck
 				},
 				SizeLength:       13,
 				IndexLength:      3,
@@ -516,7 +519,7 @@ func TestRecorderFMP4NegativeDTSDiff(t *testing.T) {
 	}}
 
 	strm := &stream.Stream{
-		Desc:              desc,
+		OrigDesc:          desc,
 		WriteQueueSize:    512,
 		RTPMaxPayloadSize: 1450,
 		Parent:            test.NilLogger,
@@ -605,7 +608,7 @@ func TestRecorderSkipTracksPartial(t *testing.T) {
 			desc := &description.Session{Medias: []*description.Media{
 				{
 					Type:    description.MediaTypeVideo,
-					Formats: []rtspformat.Format{&rtspformat.H264{}},
+					Formats: []rtspformat.Format{&rtspformat.H264{PacketizationMode: 1}},
 				},
 				{
 					Type:    description.MediaTypeVideo,
@@ -614,7 +617,7 @@ func TestRecorderSkipTracksPartial(t *testing.T) {
 			}}
 
 			strm := &stream.Stream{
-				Desc:              desc,
+				OrigDesc:          desc,
 				WriteQueueSize:    512,
 				RTPMaxPayloadSize: 1450,
 				Parent:            test.NilLogger,
@@ -680,7 +683,7 @@ func TestRecorderSkipTracksFull(t *testing.T) {
 			}}
 
 			strm := &stream.Stream{
-				Desc:              desc,
+				OrigDesc:          desc,
 				WriteQueueSize:    512,
 				RTPMaxPayloadSize: 1450,
 				Parent:            test.NilLogger,
@@ -748,7 +751,7 @@ func TestRecorderFMP4SegmentSwitch(t *testing.T) {
 	}}
 
 	strm := &stream.Stream{
-		Desc:              desc,
+		OrigDesc:          desc,
 		WriteQueueSize:    512,
 		RTPMaxPayloadSize: 1450,
 		Parent:            test.NilLogger,
@@ -863,9 +866,10 @@ func TestRecorderTimeDriftDetector(t *testing.T) {
 					Formats: []rtspformat.Format{&rtspformat.MPEG4Audio{
 						PayloadTyp: 96,
 						Config: &mpeg4audio.AudioSpecificConfig{
-							Type:         2,
-							SampleRate:   44100,
-							ChannelCount: 2,
+							Type:          2,
+							SampleRate:    44100,
+							ChannelConfig: 2,
+							ChannelCount:  2, //nolint:staticcheck
 						},
 						SizeLength:       13,
 						IndexLength:      3,
@@ -875,7 +879,7 @@ func TestRecorderTimeDriftDetector(t *testing.T) {
 			}}
 
 			strm := &stream.Stream{
-				Desc:              desc,
+				OrigDesc:          desc,
 				WriteQueueSize:    512,
 				RTPMaxPayloadSize: 1450,
 				Parent:            test.NilLogger,
