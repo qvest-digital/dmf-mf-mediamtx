@@ -138,6 +138,7 @@ components:
         - srtConn
         - srtSource
         - mpegtsSource
+        - mxlSource
         - rtpSource
         - webRTCSession
         - webRTCSource
@@ -957,6 +958,21 @@ components:
           description: MPEG-TS source
           nullable: true
           deprecated: true
+        mxlCodec:
+          type: string
+        mxlFFmpegPath:
+          type: string
+          description: MXL source
+        mxlH264Bitrate:
+          type: integer
+          format: uint64
+        mxlH264IDRPeriod:
+          type: integer
+          format: uint64
+        mxlH264Preset:
+          type: string
+        mxlH264Profile:
+          type: string
         name:
           type: string
           description: filled by Validate()

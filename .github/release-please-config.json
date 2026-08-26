@@ -14,12 +14,12 @@
     }
   },
   "changelog-sections": [
-    {"type": "feat", "section": "Features"},
-    {"type": "fix", "section": "Bug Fixes"},
-    {"type": "deps", "section": "Dependencies"},
-    {"type": "build", "section": "Build System"},
-    {"type": "ci", "section": "Continuous Integration"},
-    {"type": "chore", "section": "Miscellaneous"},
-    {"type": "docs", "section": "Documentation", "hidden": true}
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "deps", "section": "Dependencies" },
+    { "type": "build", "section": "Build System" },
+    { "type": "ci", "section": "Continuous Integration" },
+    { "type": "chore", "section": "Miscellaneous" },
+    { "type": "docs", "section": "Documentation", "hidden": true }
   ]
 }

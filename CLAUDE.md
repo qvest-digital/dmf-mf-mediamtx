@@ -8,7 +8,7 @@ source. The only build output is a container image.
 - Terse. Say the thing, stop. No preamble, no recap, no restating the task.
 - No filler adjectives (robust, seamless, powerful, comprehensive). State what
   the code does, not how good it is.
-- Comments explain *why*, not *what*. Delete comments that restate the code.
+- Comments explain _why_, not _what_. Delete comments that restate the code.
   Revalidate a comment against its context before leaving it in place; remove
   stale references and accounts of how the code came to look this way.
 - Write declarative facts. No personal pronouns. Don't address a reader.
