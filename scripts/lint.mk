@@ -1,8 +1,8 @@
-define DOCKERFILE_API_DOCS_LINT
+define DOCKERFILE_APIDOCS_LINT
 FROM $(NODE_IMAGE)
 RUN yarn global add @redocly/cli@1.0.0-beta.123
 endef
-export DOCKERFILE_API_DOCS_LINT
+export DOCKERFILE_APIDOCS_LINT
 
 lint-go:
 	docker run --rm -v "$(shell pwd):/app" -w /app \
@@ -15,23 +15,21 @@ lint-go-mod:
 lint-conf:
 	go test -v -tags enable_linters ./internal/linters/conf
 
-lint-go2api:
-	go test -v -tags enable_linters ./internal/linters/go2api
-
 lint-docslinks:
 	go test -v -tags enable_linters ./internal/linters/docslinks
 
 lint-docsorder:
 	go test -v -tags enable_linters ./internal/linters/docsorder
 
-lint-docs:
+lint-apidocs:
+	go run ./internal/apidocsgen --check
+	echo "$$DOCKERFILE_APIDOCS_LINT" | docker build . -f - -t temp
+	docker run --rm -v "$(shell pwd)/api:/s" -w /s temp \
+	sh -c "openapi lint openapi.yaml && openapi lint playback.openapi.yaml"
+
+lint-other:
 	echo "$$DOCKERFILE_PRETTIER" | docker build . -f - -t temp
-	docker run --rm -v "$(shell pwd)/docs:/s" -w /s temp \
+	docker run --rm -v "$(shell pwd)/:/s" -w /s temp \
 	sh -c "prettier --check ."
 
-lint-api-docs:
-	echo "$$DOCKERFILE_API_DOCS_LINT" | docker build . -f - -t temp
-	docker run --rm -v "$(shell pwd)/api:/s" -w /s temp \
-	sh -c "openapi lint openapi.yaml"
-
-lint: lint-go lint-go-mod lint-conf lint-go2api lint-docslinks lint-docsorder lint-docs lint-api-docs
+lint: lint-go lint-go-mod lint-conf lint-docslinks lint-docsorder lint-apidocs lint-other

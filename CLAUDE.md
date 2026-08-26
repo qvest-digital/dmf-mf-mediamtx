@@ -69,7 +69,11 @@ three packages that reach it -- the MXL source, the static source registry
 that imports it, and `internal/core` through the registry -- and skips exactly
 those.
 
-Two upstream-owned files carry fork state and will conflict on an upstream
-merge: `api/openapi.yaml` lists the `mxl*` path properties and `mxlSource`,
-and the `internal/conf` fixture asserts the fork's path defaults. They are
-what the go2api linter and the conf test compare against.
+`api/openapi.yaml` is generated from `internal/apidocsgen`, which reflects
+over `conf.Path` and `defs.APIPathSourceType`, so the `mxl*` path properties
+and `mxlSource` appear in it without being written there. `make apidocs`
+regenerates it and `make lint-apidocs` fails when the committed file has
+drifted.
+
+One upstream-owned file carries fork state and will conflict on an upstream
+merge: the `internal/conf` fixture asserts the fork's path defaults.

@@ -9,11 +9,12 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/google/uuid"
+
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/logger"
-	"github.com/google/uuid"
 )
 
 // ErrMuxerNotFound is returned when a muxer is not found.
@@ -181,7 +182,7 @@ func (s *Server) Initialize() error {
 		return err
 	}
 
-	str := "listener opened on " + s.Address
+	str := "started with listener on " + s.Address
 	if !s.Encryption {
 		str += " (TCP/HTTP)"
 	} else {
@@ -206,7 +207,7 @@ func (s *Server) Log(level logger.Level, format string, args ...any) {
 
 // Close closes the server.
 func (s *Server) Close() {
-	s.Log(logger.Info, "listener is closing")
+	s.Log(logger.Info, "closing")
 
 	if !interfaceIsEmpty(s.Metrics) {
 		s.Metrics.SetHLSServer(nil)

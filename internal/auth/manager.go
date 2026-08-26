@@ -14,16 +14,14 @@ import (
 	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
-	"github.com/bluenviron/mediamtx/internal/conf"
-	"github.com/bluenviron/mediamtx/internal/protocols/tls"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/protocols/tls"
 )
 
 const (
-	// PauseAfterError is the pause to apply after an authentication failure.
-	PauseAfterError = 2 * time.Second
-
 	maxInboundBodySize = 128 * 1024
 	jwksRefreshPeriod  = 60 * 60 * time.Second
 )
@@ -144,7 +142,7 @@ func (m *Manager) Authenticate(req *Request) (string, *Error) {
 	if err != nil {
 		return "", &Error{
 			Wrapped:        err,
-			AskCredentials: (req.Credentials.User == "" && req.Credentials.Pass == "" && token == ""),
+			AskCredentials: req.EnableAskCredentials && req.Credentials.User == "" && req.Credentials.Pass == "" && token == "",
 		}
 	}
 
@@ -197,25 +195,27 @@ func (m *Manager) authenticateHTTP(req *Request, token string) (string, error) {
 	}
 
 	enc, _ := json.Marshal(struct {
-		IP       string     `json:"ip"`
-		User     string     `json:"user"`
-		Password string     `json:"password"`
-		Token    string     `json:"token"`
-		Action   string     `json:"action"`
-		Path     string     `json:"path"`
-		Protocol string     `json:"protocol"`
-		ID       *uuid.UUID `json:"id"`
-		Query    string     `json:"query"`
+		IP        string     `json:"ip"`
+		User      string     `json:"user"`
+		Password  string     `json:"password"`
+		Token     string     `json:"token"`
+		Action    string     `json:"action"`
+		Path      string     `json:"path"`
+		Protocol  string     `json:"protocol"`
+		ID        *uuid.UUID `json:"id"`
+		Query     string     `json:"query"`
+		UserAgent string     `json:"userAgent"`
 	}{
-		IP:       req.IP.String(),
-		User:     req.Credentials.User,
-		Password: req.Credentials.Pass,
-		Token:    token,
-		Action:   string(req.Action),
-		Path:     req.Path,
-		Protocol: string(req.Protocol),
-		ID:       req.ID,
-		Query:    req.Query,
+		IP:        req.IP.String(),
+		User:      req.Credentials.User,
+		Password:  req.Credentials.Pass,
+		Token:     token,
+		Action:    string(req.Action),
+		Path:      req.Path,
+		Protocol:  string(req.Protocol),
+		ID:        req.ID,
+		Query:     req.Query,
+		UserAgent: req.UserAgent,
 	})
 
 	tr := &http.Transport{
@@ -295,7 +295,7 @@ func (m *Manager) pullJWTJWKS() (jwt.Keyfunc, error) {
 		defer tr.CloseIdleConnections()
 
 		httpClient := &http.Client{
-			Timeout:   (m.ReadTimeout),
+			Timeout:   m.ReadTimeout,
 			Transport: tr,
 		}
 

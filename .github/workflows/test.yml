@@ -2,14 +2,15 @@ name: test
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   test_64:
-    # libmxl is built against a newer libstdc++ than 22.04 ships, so linking a
-    # test binary that reaches it fails there on GLIBCXX/CXXABI symbols.
     runs-on: ubuntu-24.04
 
     env:
@@ -17,39 +18,38 @@ jobs:
       LD_LIBRARY_PATH: /opt/libmxl/lib
 
     steps:
-    - uses: actions/checkout@v6
-      with:
-        fetch-depth: 0
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-    - uses: actions/setup-go@v6
-      with:
-        go-version: "1.26"
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
 
-    - uses: ./.github/actions/libmxl
+      - uses: ./.github/actions/libmxl
 
-    # Runs on the host rather than through the dockerised target: the test
-    # image is musl-based and libmxl is built against glibc, so the MXL
-    # source cannot link inside it.
-    - run: make test-nodocker
+      # Runs on the host rather than through the dockerised target: the test
+      # image is musl-based and libmxl is built against glibc, so the MXL
+      # source cannot link inside it.
+      - run: make test-nodocker
 
-    - uses: codecov/codecov-action@v6
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
+      - uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   test_32:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
-    - uses: actions/checkout@v6
-      with:
-        fetch-depth: 0
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-    # libmxl is published for 64-bit glibc only, so the packages that link
-    # it are out of reach here. This covers the rest of the tree on 32-bit.
-    - run: make test-32
+      # libmxl is published for 64-bit glibc only, so the packages that link
+      # it are out of reach here. This covers the rest of the tree on 32-bit.
+      - run: make test-32
 
   test_e2e:
-    # Same libstdc++ requirement as test_64.
     runs-on: ubuntu-24.04
 
     env:
@@ -57,14 +57,14 @@ jobs:
       LD_LIBRARY_PATH: /opt/libmxl/lib
 
     steps:
-    - uses: actions/checkout@v6
-      with:
-        fetch-depth: 0
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-    - uses: actions/setup-go@v6
-      with:
-        go-version: "1.26"
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
 
-    - uses: ./.github/actions/libmxl
+      - uses: ./.github/actions/libmxl
 
-    - run: make test-e2e-nodocker
+      - run: make test-e2e-nodocker

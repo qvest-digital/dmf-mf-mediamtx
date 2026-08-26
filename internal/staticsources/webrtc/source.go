@@ -31,6 +31,7 @@ type Source struct {
 	DumpPackets       bool
 	ReadTimeout       conf.Duration
 	UDPReadBufferSize uint
+	SupportsIPv6      bool
 	Parent            parent
 }
 
@@ -66,7 +67,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		tr.TLSClientConfig = tlsConfig
 	}
 
-	u.Scheme = strings.ReplaceAll(u.Scheme, "whep", "http")
+	u.Scheme = strings.Replace(u.Scheme, "whep", "http", 1)
 
 	client := whip.Client{
 		URL: u,
@@ -76,6 +77,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		},
 		BearerToken:        params.Conf.WHEPBearerToken,
 		UDPReadBufferSize:  s.UDPReadBufferSize,
+		SupportsIPv6:       s.SupportsIPv6,
 		STUNGatherTimeout:  time.Duration(params.Conf.WHEPSTUNGatherTimeout),
 		HandshakeTimeout:   time.Duration(params.Conf.WHEPHandshakeTimeout),
 		TrackGatherTimeout: time.Duration(params.Conf.WHEPTrackGatherTimeout),

@@ -17,17 +17,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bluenviron/gortsplib/v5/pkg/readbuffer"
 	"github.com/google/uuid"
 	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
 	pwebrtc "github.com/pion/webrtc/v4"
 
-	"github.com/bluenviron/gortsplib/v5/pkg/readbuffer"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/protocols/webrtc"
+	"github.com/bluenviron/mediamtx/internal/protocols/whip"
 	"github.com/bluenviron/mediamtx/internal/restrictnetwork"
 )
 
@@ -132,42 +133,40 @@ type serverAPISessionsKickReq struct {
 	res  chan serverAPISessionsKickRes
 }
 
-type webRTCNewSessionRes struct {
+type newSessionRes struct {
 	sx            *session
-	answer        []byte
 	errStatusCode int
 	err           error
 }
 
-type webRTCNewSessionReq struct {
+type newSessionReq struct {
 	pathName    string
 	remoteAddr  string
 	offer       []byte
 	publish     bool
 	httpRequest *http.Request
-	res         chan webRTCNewSessionRes
+	res         chan newSessionRes
 }
 
-type webRTCAddSessionCandidatesRes struct {
-	sx  *session
-	err error
+type addSessionCandidatesRes struct {
+	sx     *session
+	answer *whip.SDPFragment
+	err    error
 }
 
-type webRTCAddSessionCandidatesReq struct {
-	pathName   string
-	secret     uuid.UUID
-	candidates []*pwebrtc.ICECandidateInit
-	res        chan webRTCAddSessionCandidatesRes
-}
-
-type webRTCDeleteSessionRes struct {
-	err error
-}
-
-type webRTCDeleteSessionReq struct {
-	pathName string
+type addSessionCandidatesReq struct {
 	secret   uuid.UUID
-	res      chan webRTCDeleteSessionRes
+	fragment *whip.SDPFragment
+	res      chan addSessionCandidatesRes
+}
+
+type deleteSessionRes struct {
+	err error
+}
+
+type deleteSessionReq struct {
+	secret uuid.UUID
+	res    chan deleteSessionRes
 }
 
 type serverMetrics interface {
@@ -198,6 +197,7 @@ type Server struct {
 	UDPReadBufferSize     uint
 	LocalUDPAddress       string
 	LocalTCPAddress       string
+	SupportsIPv6          bool
 	IPsFromInterfaces     bool
 	IPsFromInterfacesList []string
 	AdditionalHosts       []string
@@ -215,16 +215,17 @@ type Server struct {
 	httpServer       *httpServer
 	udpMuxLn         net.PacketConn
 	tcpMuxLn         net.Listener
+	net              *webrtc.Net
 	iceUDPMux        ice.UDPMux
 	iceTCPMux        *webrtc.TCPMuxWrapper
 	sessions         map[*session]struct{}
 	sessionsBySecret map[uuid.UUID]*session
 
 	// in
-	chNewSession           chan webRTCNewSessionReq
+	chNewSession           chan newSessionReq
 	chCloseSession         chan *session
-	chAddSessionCandidates chan webRTCAddSessionCandidatesReq
-	chDeleteSession        chan webRTCDeleteSessionReq
+	chAddSessionCandidates chan addSessionCandidatesReq
+	chDeleteSession        chan deleteSessionReq
 	chAPISessionsList      chan serverAPISessionsListReq
 	chAPISessionsGet       chan serverAPISessionsGetReq
 	chAPIConnsKick         chan serverAPISessionsKickReq
@@ -241,10 +242,10 @@ func (s *Server) Initialize() error {
 	s.ctxCancel = ctxCancel
 	s.sessions = make(map[*session]struct{})
 	s.sessionsBySecret = make(map[uuid.UUID]*session)
-	s.chNewSession = make(chan webRTCNewSessionReq)
+	s.chNewSession = make(chan newSessionReq)
 	s.chCloseSession = make(chan *session)
-	s.chAddSessionCandidates = make(chan webRTCAddSessionCandidatesReq)
-	s.chDeleteSession = make(chan webRTCDeleteSessionReq)
+	s.chAddSessionCandidates = make(chan addSessionCandidatesReq)
+	s.chDeleteSession = make(chan deleteSessionReq)
 	s.chAPISessionsList = make(chan serverAPISessionsListReq)
 	s.chAPISessionsGet = make(chan serverAPISessionsGetReq)
 	s.chAPIConnsKick = make(chan serverAPISessionsKickReq)
@@ -269,6 +270,8 @@ func (s *Server) Initialize() error {
 		return err
 	}
 
+	s.net = &webrtc.Net{UDPReadBufferSize: int(s.UDPReadBufferSize)}
+
 	if s.LocalUDPAddress != "" {
 		s.udpMuxLn, err = net.ListenPacket(restrictnetwork.Restrict("udp", s.LocalUDPAddress))
 		if err != nil {
@@ -287,7 +290,11 @@ func (s *Server) Initialize() error {
 			}
 		}
 
-		s.iceUDPMux = pwebrtc.NewICEUDPMux(webrtcNilLogger, s.udpMuxLn)
+		s.iceUDPMux = ice.NewUDPMuxDefault(ice.UDPMuxParams{
+			UDPConn: s.udpMuxLn,
+			Logger:  webrtcNilLogger,
+			Net:     s.net,
+		})
 	}
 
 	if s.LocalTCPAddress != "" {
@@ -307,7 +314,7 @@ func (s *Server) Initialize() error {
 		}
 	}
 
-	str := "listener opened on " + s.Address
+	str := "started with listeners on " + s.Address
 	if !s.Encryption {
 		str += " (TCP/HTTP)"
 	} else {
@@ -337,7 +344,7 @@ func (s *Server) Log(level logger.Level, format string, args ...any) {
 
 // Close closes the server.
 func (s *Server) Close() {
-	s.Log(logger.Info, "listener is closing")
+	s.Log(logger.Info, "closing")
 
 	if !interfaceIsEmpty(s.Metrics) {
 		s.Metrics.SetWebRTCServer(nil)
@@ -357,17 +364,22 @@ outer:
 		select {
 		case req := <-s.chNewSession:
 			sx := &session{
-				udpReadBufferSize:     s.UDPReadBufferSize,
+				net:                   s.net,
 				parentCtx:             s.ctx,
 				ipsFromInterfaces:     s.IPsFromInterfaces,
 				ipsFromInterfacesList: s.IPsFromInterfacesList,
 				additionalHosts:       s.AdditionalHosts,
 				iceUDPMux:             s.iceUDPMux,
 				iceTCPMux:             s.iceTCPMux,
+				supportsIPv6:          s.SupportsIPv6,
 				stunGatherTimeout:     s.STUNGatherTimeout,
 				handshakeTimeout:      s.HandshakeTimeout,
 				trackGatherTimeout:    s.TrackGatherTimeout,
-				req:                   req,
+				pathName:              req.pathName,
+				remoteAddr:            req.remoteAddr,
+				offer:                 req.offer,
+				publish:               req.publish,
+				httpRequest:           req.httpRequest,
 				wg:                    &wg,
 				externalCmdPool:       s.ExternalCmdPool,
 				pathManager:           s.PathManager,
@@ -376,7 +388,7 @@ outer:
 			sx.initialize()
 			s.sessions[sx] = struct{}{}
 			s.sessionsBySecret[sx.secret] = sx
-			req.res <- webRTCNewSessionRes{sx: sx}
+			req.res <- newSessionRes{sx: sx}
 
 		case sx := <-s.chCloseSession:
 			delete(s.sessions, sx)
@@ -384,17 +396,17 @@ outer:
 
 		case req := <-s.chAddSessionCandidates:
 			sx, ok := s.sessionsBySecret[req.secret]
-			if !ok || sx.req.pathName != req.pathName {
-				req.res <- webRTCAddSessionCandidatesRes{err: ErrSessionNotFound}
+			if !ok {
+				req.res <- addSessionCandidatesRes{err: ErrSessionNotFound}
 				continue
 			}
 
-			req.res <- webRTCAddSessionCandidatesRes{sx: sx}
+			req.res <- addSessionCandidatesRes{sx: sx}
 
 		case req := <-s.chDeleteSession:
 			sx, ok := s.sessionsBySecret[req.secret]
-			if !ok || sx.req.pathName != req.pathName {
-				req.res <- webRTCDeleteSessionRes{err: ErrSessionNotFound}
+			if !ok {
+				req.res <- deleteSessionRes{err: ErrSessionNotFound}
 				continue
 			}
 
@@ -402,7 +414,7 @@ outer:
 			delete(s.sessionsBySecret, sx.secret)
 			sx.Close()
 
-			req.res <- webRTCDeleteSessionRes{}
+			req.res <- deleteSessionRes{}
 
 		case req := <-s.chAPISessionsList:
 			data := &defs.APIWebRTCSessionList{
@@ -503,17 +515,15 @@ func (s *Server) generateICEServers(clientConfig bool) ([]pwebrtc.ICEServer, err
 }
 
 // newSession is called by webRTCHTTPServer.
-func (s *Server) newSession(req webRTCNewSessionReq) webRTCNewSessionRes {
-	req.res = make(chan webRTCNewSessionRes)
+func (s *Server) newSession(req newSessionReq) newSessionRes {
+	req.res = make(chan newSessionRes)
 
 	select {
 	case s.chNewSession <- req:
-		res := <-req.res
-
-		return res.sx.new(req)
+		return <-req.res
 
 	case <-s.ctx.Done():
-		return webRTCNewSessionRes{
+		return newSessionRes{
 			errStatusCode: http.StatusInternalServerError,
 			err:           fmt.Errorf("terminated"),
 		}
@@ -530,9 +540,9 @@ func (s *Server) closeSession(sx *session) {
 
 // addSessionCandidates is called by webRTCHTTPServer.
 func (s *Server) addSessionCandidates(
-	req webRTCAddSessionCandidatesReq,
-) webRTCAddSessionCandidatesRes {
-	req.res = make(chan webRTCAddSessionCandidatesRes)
+	req addSessionCandidatesReq,
+) addSessionCandidatesRes {
+	req.res = make(chan addSessionCandidatesRes)
 	select {
 	case s.chAddSessionCandidates <- req:
 		res1 := <-req.res
@@ -543,13 +553,13 @@ func (s *Server) addSessionCandidates(
 		return res1.sx.addCandidates(req)
 
 	case <-s.ctx.Done():
-		return webRTCAddSessionCandidatesRes{err: fmt.Errorf("terminated")}
+		return addSessionCandidatesRes{err: fmt.Errorf("terminated")}
 	}
 }
 
 // deleteSession is called by webRTCHTTPServer.
-func (s *Server) deleteSession(req webRTCDeleteSessionReq) error {
-	req.res = make(chan webRTCDeleteSessionRes)
+func (s *Server) deleteSession(req deleteSessionReq) error {
+	req.res = make(chan deleteSessionRes)
 	select {
 	case s.chDeleteSession <- req:
 		res := <-req.res

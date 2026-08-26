@@ -2,12 +2,16 @@ package defs
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // APIPathManager contains methods used by the API and Metrics server.
 type APIPathManager interface {
 	APIPathsList() (*APIPathList, error)
 	APIPathsGet(string) (*APIPath, error)
+	APIForwardDestList(string) (*APIForwardDestList, error)
+	APIForwardDestGet(string, uuid.UUID) (*APIForwardDest, error)
 }
 
 // APIPathSourceType is the type of a path source.
@@ -31,6 +35,8 @@ const (
 	APIPathSourceTypeRTPSource       APIPathSourceType = "rtpSource"
 	APIPathSourceTypeWebRTCSession   APIPathSourceType = "webRTCSession"
 	APIPathSourceTypeWebRTCSource    APIPathSourceType = "webRTCSource"
+	APIPathSourceTypeMoQSource       APIPathSourceType = "moqSource"
+	APIPathSourceTypeMoQSession      APIPathSourceType = "moqSession"
 )
 
 // APIPathSource is a source.
@@ -53,6 +59,7 @@ const (
 	APIPathReaderTypeRTSPSSession  APIPathReaderType = "rtspsSession"
 	APIPathReaderTypeSRTConn       APIPathReaderType = "srtConn"
 	APIPathReaderTypeWebRTCSession APIPathReaderType = "webRTCSession"
+	APIPathReaderTypeMoQSession    APIPathReaderType = "moqSession"
 	APIPathReaderTypeHidden        APIPathReaderType = "hidden"
 )
 

@@ -2,10 +2,13 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"sort"
 	"sync"
+
+	"github.com/google/uuid"
 
 	"github.com/bluenviron/mediamtx/internal/auth"
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -21,6 +24,7 @@ func pathConfCanBeUpdated(oldPathConf *conf.Path, newPathConf *conf.Path) bool {
 
 	clone.Name = newPathConf.Name
 	clone.Regexp = newPathConf.Regexp
+	clone.Forward = newPathConf.Forward
 
 	clone.Record = newPathConf.Record
 	clone.RecordPath = newPathConf.RecordPath
@@ -44,6 +48,8 @@ func pathConfCanBeUpdated(oldPathConf *conf.Path, newPathConf *conf.Path) bool {
 	clone.RPICameraGain = newPathConf.RPICameraGain
 	clone.RPICameraEV = newPathConf.RPICameraEV
 	clone.RPICameraFPS = newPathConf.RPICameraFPS
+	clone.RPICameraTextOverlayEnable = newPathConf.RPICameraTextOverlayEnable
+	clone.RPICameraTextOverlay = newPathConf.RPICameraTextOverlay
 	clone.RPICameraIDRPeriod = newPathConf.RPICameraIDRPeriod
 	clone.RPICameraBitrate = newPathConf.RPICameraBitrate
 
@@ -75,7 +81,9 @@ type pathManager struct {
 	writeTimeout      conf.Duration
 	writeQueueSize    int
 	udpReadBufferSize uint
+	udpMaxPayloadSize int
 	rtpMaxPayloadSize int
+	supportsIPv6      bool
 	pathConfs         map[string]*conf.Path
 	authManager       pathManagerAuthManager
 	externalCmdPool   *externalcmd.Pool
@@ -89,18 +97,20 @@ type pathManager struct {
 	paths     map[string]*path
 
 	// in
-	chReloadConf      chan map[string]*conf.Path
-	chSetHLSServer    chan pathSetHLSServerReq
-	chRemovePath      chan *path
-	chClosePathIfIdle chan *path
-	chSetPathReady    chan *path
-	chSetPathNotReady chan *path
-	chFindPathConf    chan defs.PathFindPathConfReq
-	chDescribe        chan defs.PathDescribeReq
-	chAddReader       chan defs.PathAddReaderReq
-	chAddPublisher    chan defs.PathAddPublisherReq
-	chAPIPathsList    chan pathAPIPathsListReq
-	chAPIPathsGet     chan pathAPIPathsGetReq
+	chReloadConf         chan map[string]*conf.Path
+	chSetHLSServer       chan pathSetHLSServerReq
+	chRemovePath         chan *path
+	chClosePathIfIdle    chan *path
+	chSetPathReady       chan *path
+	chSetPathNotReady    chan *path
+	chFindPathConf       chan defs.PathFindPathConfReq
+	chDescribe           chan defs.PathDescribeReq
+	chAddReader          chan defs.PathAddReaderReq
+	chAddPublisher       chan defs.PathAddPublisherReq
+	chAPIPathsList       chan pathAPIPathsListReq
+	chAPIPathsGet        chan pathAPIPathsGetReq
+	chAPIForwardDestList chan pathAPIForwardDestListReq
+	chAPIForwardDestGet  chan pathAPIForwardDestGetReq
 }
 
 func (pm *pathManager) initialize() {
@@ -121,6 +131,8 @@ func (pm *pathManager) initialize() {
 	pm.chAddPublisher = make(chan defs.PathAddPublisherReq)
 	pm.chAPIPathsList = make(chan pathAPIPathsListReq)
 	pm.chAPIPathsGet = make(chan pathAPIPathsGetReq)
+	pm.chAPIForwardDestList = make(chan pathAPIForwardDestListReq)
+	pm.chAPIForwardDestGet = make(chan pathAPIForwardDestGetReq)
 
 	for _, pathConf := range pm.pathConfs {
 		if pathConf.Regexp == nil {
@@ -200,6 +212,12 @@ outer:
 
 		case req := <-pm.chAPIPathsGet:
 			pm.doAPIPathsGet(req)
+
+		case req := <-pm.chAPIForwardDestList:
+			pm.doAPIForwardDestList(req)
+
+		case req := <-pm.chAPIForwardDestGet:
+			pm.doAPIForwardDestGet(req)
 
 		case <-pm.ctx.Done():
 			break outer
@@ -343,10 +361,12 @@ func (pm *pathManager) doDescribe(req defs.PathDescribeReq) {
 		return
 	}
 
-	_, err2 := pm.authManager.Authenticate(req.AccessRequest.ToAuthRequest())
-	if err2 != nil {
-		req.Res <- defs.PathDescribeRes{Err: err2}
-		return
+	if !req.AccessRequest.SkipAuth {
+		_, err2 := pm.authManager.Authenticate(req.AccessRequest.ToAuthRequest())
+		if err2 != nil {
+			req.Res <- defs.PathDescribeRes{Err: err2}
+			return
+		}
 	}
 
 	// create path if it doesn't exist
@@ -449,6 +469,26 @@ func (pm *pathManager) doAPIPathsGet(req pathAPIPathsGetReq) {
 	req.res <- pathAPIPathsGetRes{path: pa}
 }
 
+func (pm *pathManager) doAPIForwardDestList(req pathAPIForwardDestListReq) {
+	pa, ok := pm.paths[req.name]
+	if !ok {
+		req.res <- pathAPIForwardDestListRes{err: conf.ErrPathNotFound}
+		return
+	}
+
+	req.res <- pathAPIForwardDestListRes{path: pa}
+}
+
+func (pm *pathManager) doAPIForwardDestGet(req pathAPIForwardDestGetReq) {
+	pa, ok := pm.paths[req.name]
+	if !ok {
+		req.res <- pathAPIForwardDestGetRes{err: conf.ErrPathNotFound}
+		return
+	}
+
+	req.res <- pathAPIForwardDestGetRes{path: pa}
+}
+
 func (pm *pathManager) createPath(
 	pathConf *conf.Path,
 	name string,
@@ -463,7 +503,9 @@ func (pm *pathManager) createPath(
 		writeTimeout:      pm.writeTimeout,
 		writeQueueSize:    pm.writeQueueSize,
 		udpReadBufferSize: pm.udpReadBufferSize,
+		udpMaxPayloadSize: pm.udpMaxPayloadSize,
 		rtpMaxPayloadSize: pm.rtpMaxPayloadSize,
+		supportsIPv6:      pm.supportsIPv6,
 		conf:              pathConf,
 		name:              name,
 		matches:           matches,
@@ -525,7 +567,14 @@ func (pm *pathManager) FindPathConf(req defs.PathFindPathConfReq) (*defs.PathFin
 	select {
 	case pm.chFindPathConf <- req:
 		res := <-req.Res
-		return &res, res.Err
+		if res.Err != nil {
+			if terr, ok := errors.AsType[*auth.Error](res.Err); ok && !terr.AskCredentials {
+				auth.LogAndDelayError(req.Author, terr)
+			}
+			return nil, res.Err
+		}
+
+		return &res, nil
 
 	case <-pm.ctx.Done():
 		return nil, fmt.Errorf("terminated")
@@ -533,25 +582,28 @@ func (pm *pathManager) FindPathConf(req defs.PathFindPathConfReq) (*defs.PathFin
 }
 
 // Describe is called by a reader or publisher.
-func (pm *pathManager) Describe(req defs.PathDescribeReq) defs.PathDescribeRes {
+func (pm *pathManager) Describe(req defs.PathDescribeReq) (*defs.PathDescribeRes, error) {
 	req.Res = make(chan defs.PathDescribeRes)
 	select {
 	case pm.chDescribe <- req:
 		res1 := <-req.Res
 		if res1.Err != nil {
-			return res1
+			if terr, ok := errors.AsType[*auth.Error](res1.Err); ok && !terr.AskCredentials {
+				auth.LogAndDelayError(req.Author, terr)
+			}
+			return nil, res1.Err
 		}
 
-		res2 := res1.Path.(*path).describe(req)
-		if res2.Err != nil {
-			return res2
+		res2, err := res1.Path.(*path).describe(req)
+		if err != nil {
+			return nil, err
 		}
 
 		res2.Path = res1.Path
-		return res2
+		return res2, nil
 
 	case <-pm.ctx.Done():
-		return defs.PathDescribeRes{Err: fmt.Errorf("terminated")}
+		return nil, fmt.Errorf("terminated")
 	}
 }
 
@@ -562,6 +614,9 @@ func (pm *pathManager) AddPublisher(req defs.PathAddPublisherReq) (*defs.PathAdd
 	case pm.chAddPublisher <- req:
 		res1 := <-req.Res
 		if res1.Err != nil {
+			if terr, ok := errors.AsType[*auth.Error](res1.Err); ok && !terr.AskCredentials {
+				auth.LogAndDelayError(req.Author, terr)
+			}
 			return nil, res1.Err
 		}
 
@@ -587,6 +642,9 @@ func (pm *pathManager) AddReader(req defs.PathAddReaderReq) (*defs.PathAddReader
 	case pm.chAddReader <- req:
 		res1 := <-req.Res
 		if res1.Err != nil {
+			if terr, ok := errors.AsType[*auth.Error](res1.Err); ok && !terr.AskCredentials {
+				auth.LogAndDelayError(req.Author, terr)
+			}
 			return nil, res1.Err
 		}
 
@@ -669,6 +727,51 @@ func (pm *pathManager) APIPathsGet(name string) (*defs.APIPath, error) {
 		}
 
 		data, err := res.path.APIPathsGet(req)
+		return data, err
+
+	case <-pm.ctx.Done():
+		return nil, fmt.Errorf("terminated")
+	}
+}
+
+// APIForwardDestList implements defs.APIPathManager.
+func (pm *pathManager) APIForwardDestList(name string) (*defs.APIForwardDestList, error) {
+	req := pathAPIForwardDestListReq{
+		name: name,
+		res:  make(chan pathAPIForwardDestListRes),
+	}
+
+	select {
+	case pm.chAPIForwardDestList <- req:
+		res := <-req.res
+		if res.err != nil {
+			return nil, res.err
+		}
+
+		data := res.path.APIForwardDestList()
+		return data, nil
+
+	case <-pm.ctx.Done():
+		return nil, fmt.Errorf("terminated")
+	}
+}
+
+// APIForwardDestGet implements defs.APIPathManager.
+func (pm *pathManager) APIForwardDestGet(name string, id uuid.UUID) (*defs.APIForwardDest, error) {
+	req := pathAPIForwardDestGetReq{
+		name: name,
+		id:   id,
+		res:  make(chan pathAPIForwardDestGetRes),
+	}
+
+	select {
+	case pm.chAPIForwardDestGet <- req:
+		res := <-req.res
+		if res.err != nil {
+			return nil, res.err
+		}
+
+		data, err := res.path.APIForwardDestGet(req.id)
 		return data, err
 
 	case <-pm.ctx.Done():

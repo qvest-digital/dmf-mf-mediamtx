@@ -74,6 +74,7 @@ type metricsType string
 
 const (
 	metricsTypePaths          metricsType = "paths"
+	metricsTypeForwardDests   metricsType = "forward_dests"
 	metricsTypeHLSSessions    metricsType = "hls_sessions"
 	metricsTypeHLSMuxers      metricsType = "hls_muxers"
 	metricsTypeRTSPConns      metricsType = "rtsp_conns"
@@ -84,6 +85,7 @@ const (
 	metricsTypeRTMPSConns     metricsType = "rtmps_conns"
 	metricsTypeSRTConns       metricsType = "srt_conns"
 	metricsTypeWebRTCSessions metricsType = "webrtc_sessions"
+	metricsTypeMoQSessions    metricsType = "moq_sessions"
 )
 
 type metricsAuthManager interface {
@@ -118,13 +120,13 @@ type Metrics struct {
 	rtmpsServer  defs.APIRTMPServer
 	srtServer    defs.APISRTServer
 	webRTCServer defs.APIWebRTCServer
+	moqServer    defs.APIMoQServer
 }
 
 // Initialize initializes metrics.
 func (m *Metrics) Initialize() error {
 	router := gin.New()
 	router.SetTrustedProxies(m.TrustedProxies.ToTrustedProxies()) //nolint:errcheck
-
 	router.Use(m.middlewarePreflightRequests)
 	router.Use(m.middlewareAuth)
 
@@ -148,7 +150,7 @@ func (m *Metrics) Initialize() error {
 		return err
 	}
 
-	str := "listener opened on " + m.Address
+	str := "started with listener on " + m.Address
 	if !m.Encryption {
 		str += " (TCP/HTTP)"
 	} else {
@@ -161,7 +163,7 @@ func (m *Metrics) Initialize() error {
 
 // Close closes Metrics.
 func (m *Metrics) Close() {
-	m.Log(logger.Info, "listener is closing")
+	m.Log(logger.Info, "closing")
 	m.httpServer.Close()
 }
 
@@ -189,10 +191,11 @@ func (m *Metrics) writeErrorNoLog(ctx *gin.Context, status int, err error) {
 
 func (m *Metrics) middlewareAuth(ctx *gin.Context) {
 	req := &auth.Request{
-		Action:      conf.AuthActionMetrics,
-		Query:       ctx.Request.URL.RawQuery,
-		Credentials: httpp.Credentials(ctx.Request),
-		IP:          net.ParseIP(ctx.ClientIP()),
+		Action:               conf.AuthActionMetrics,
+		Query:                ctx.Request.URL.RawQuery,
+		Credentials:          httpp.Credentials(ctx.Request),
+		IP:                   net.ParseIP(ctx.ClientIP()),
+		EnableAskCredentials: true,
 	}
 
 	_, err := m.AuthManager.Authenticate(req)
@@ -203,10 +206,10 @@ func (m *Metrics) middlewareAuth(ctx *gin.Context) {
 			return
 		}
 
-		m.Log(logger.Info, "connection %v failed to authenticate: %v", httpp.RemoteAddr(ctx), err.Wrapped)
-
-		// wait some seconds to delay brute force attacks
-		<-time.After(auth.PauseAfterError)
+		auth.LogAndDelayError(&logger.InlineWriter{
+			Parent: m,
+			Prefix: fmt.Sprintf("[conn %v]", httpp.RemoteAddr(ctx)),
+		}, err)
 
 		m.writeErrorNoLog(ctx, http.StatusUnauthorized, fmt.Errorf("authentication error"))
 		return
@@ -223,10 +226,12 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 	rtmpsServer := m.rtmpsServer
 	srtServer := m.srtServer
 	webRTCServer := m.webRTCServer
+	moqServer := m.moqServer
 	m.mutex.RUnlock()
 
 	typ := metricsType(ctx.Query("type"))
 	pathFilter := ctx.Query("path")
+	forwardFilter := ctx.Query("forward_dest")
 	hlsMuxerFilter := ctx.Query("hls_muxer")
 	hlsSessionFilter := ctx.Query("hls_session")
 	rtspConnFilter := ctx.Query("rtsp_conn")
@@ -237,8 +242,10 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 	rtmpsConnFilter := ctx.Query("rtmps_conn")
 	srtConnFilter := ctx.Query("srt_conn")
 	webrtcSessionFilter := ctx.Query("webrtc_session")
+	moqSessionFilter := ctx.Query("moq_session")
 
 	anyFilterActive := pathFilter != "" ||
+		forwardFilter != "" ||
 		hlsMuxerFilter != "" ||
 		hlsSessionFilter != "" ||
 		rtspConnFilter != "" ||
@@ -248,7 +255,8 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 		rtmpConnFilter != "" ||
 		rtmpsConnFilter != "" ||
 		srtConnFilter != "" ||
-		webrtcSessionFilter != ""
+		webrtcSessionFilter != "" ||
+		moqSessionFilter != ""
 
 	var out strings.Builder
 
@@ -335,6 +343,59 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 			metric(&out, "paths_bytes_sent", "", 0)
 			metric(&out, "paths_readers", "", 0)
 			out.WriteString("\n")
+		}
+	}
+
+	if (typ == "" || typ == metricsTypeForwardDests) &&
+		(!anyFilterActive || pathFilter != "" || forwardFilter != "") {
+		data, err := pathManager.APIPathsList()
+		if err == nil {
+			type forwardWithPath struct {
+				path string
+				item defs.APIForwardDest
+			}
+
+			var items []forwardWithPath
+			for _, pa := range data.Items {
+				if pathFilter != "" && pathFilter != pa.Name {
+					continue
+				}
+
+				forwards, forwardsErr := pathManager.APIForwardDestList(pa.Name)
+				if forwardsErr != nil {
+					continue
+				}
+
+				for _, item := range forwards.Items {
+					if forwardFilter == "" || forwardFilter == item.ID.String() {
+						items = append(items, forwardWithPath{
+							path: pa.Name,
+							item: item,
+						})
+					}
+				}
+			}
+
+			if len(items) != 0 {
+				out.WriteString("# Forward destinations\n")
+				for _, i := range items {
+					ta := tags(map[string]string{
+						"id":       i.item.ID.String(),
+						"path":     i.path,
+						"protocol": string(i.item.Protocol),
+						"state":    string(i.item.State),
+					})
+
+					metric(&out, "forward_dests", ta, 1)
+					metric(&out, "forward_dests_outbound_bytes", ta, int64(i.item.OutboundBytes))
+				}
+				out.WriteString("\n")
+			} else if typ == metricsTypeForwardDests && pathFilter == "" && forwardFilter == "" {
+				out.WriteString("# Forward destinations\n")
+				metric(&out, "forward_dests", "", 0)
+				metric(&out, "forward_dests_outbound_bytes", "", 0)
+				out.WriteString("\n")
+			}
 		}
 	}
 
@@ -993,6 +1054,37 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 		}
 	}
 
+	if !interfaceIsEmpty(moqServer) &&
+		(typ == "" || typ == metricsTypeMoQSessions) &&
+		(!anyFilterActive || moqSessionFilter != "") {
+		var data *defs.APIMoQSessionList
+		data, err := moqServer.APISessionsList()
+		if err == nil && len(data.Items) != 0 {
+			out.WriteString("# MoQ sessions\n")
+			for _, i := range data.Items {
+				if moqSessionFilter == "" || moqSessionFilter == i.ID.String() {
+					ta := tags(map[string]string{
+						"id":         i.ID.String(),
+						"state":      string(i.State),
+						"path":       i.Path,
+						"remoteAddr": i.RemoteAddr,
+					})
+
+					metric(&out, "moq_sessions", ta, 1)
+					metric(&out, "moq_sessions_inbound_bytes", ta, int64(i.InboundBytes))
+					metric(&out, "moq_sessions_outbound_bytes", ta, int64(i.OutboundBytes))
+				}
+			}
+			out.WriteString("\n")
+		} else if moqSessionFilter == "" {
+			out.WriteString("# MoQ sessions\n")
+			metric(&out, "moq_sessions", "", 0)
+			metric(&out, "moq_sessions_inbound_bytes", "", 0)
+			metric(&out, "moq_sessions_outbound_bytes", "", 0)
+			out.WriteString("\n")
+		}
+	}
+
 	ctx.Writer.WriteHeader(http.StatusOK)
 	ctx.Writer.WriteString(out.String()) //nolint:errcheck
 }
@@ -1051,4 +1143,11 @@ func (m *Metrics) SetWebRTCServer(s defs.APIWebRTCServer) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	m.webRTCServer = s
+}
+
+// SetMoQServer is called by core.
+func (m *Metrics) SetMoQServer(s defs.APIMoQServer) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.moqServer = s
 }
