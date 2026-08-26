@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.0-rc.4](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.3...mxl-v1.0.0-rc.4) (2026-08-26)
+
+
+### Features
+
+* **mxl source:** publish a video and an audio flow as one path ([#27](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/27)) ([d04aad5](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/d04aad5154e14140d84b6140ec3b1341978bdf38))
+* **mxl source:** publish audio flows as Opus ([#26](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/26)) ([09e5a78](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/09e5a786c5d6b6e2f1c53007e0ab5b169f9578e7))
+
+
+### Bug Fixes
+
+* **mxl source:** derive PTS from the grain index ([#25](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/25)) ([504b934](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/504b934fa689f41e124588267ef42357d864abba))
+
+
+### Miscellaneous
+
+* merge upstream mediamtx ([#22](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/22)) ([78cdf30](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/78cdf30c3fff15260dfd436177f133b021b255fb))
+
 ## [1.0.0-rc.3](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.2...mxl-v1.0.0-rc.3) (2026-08-26)
 
 
