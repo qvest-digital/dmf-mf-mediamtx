@@ -16,14 +16,11 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
-	"github.com/pion/rtp"
 	"github.com/qvest-digital/go-mxl/mxl"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
-	"github.com/bluenviron/mediamtx/internal/stream"
-	"github.com/bluenviron/mediamtx/internal/unit"
 )
 
 const (
@@ -89,10 +86,11 @@ func (*Source) APISourceDescribe() *defs.APIPathSource {
 
 // Run implements StaticSource.
 func (s *Source) Run(params defs.StaticSourceRunParams) error {
-	domain, flowID, err := parseMXLURL(params.ResolvedSource)
+	u, err := parseMXLURL(params.ResolvedSource)
 	if err != nil {
 		return err
 	}
+	domain, flowID := u.domain, u.flowID
 	s.Log(logger.Info, "opening MXL domain %q flow %s", domain, flowID)
 
 	inst, err := mxl.NewInstance(domain, "")
@@ -114,13 +112,53 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	// Audio is a continuous flow read as samples rather than grains, and it
 	// publishes Opus rather than H.264, so it takes its own path from here.
 	if info.Config.Common.Format == mxl.FormatAudio {
-		return s.runAudio(params, reader, info, flowID)
+		if u.audioFlowID != "" {
+			return fmt.Errorf("flow %s is audio, so it cannot also carry the audio of %s",
+				flowID, u.audioFlowID)
+		}
+		return s.runAudio(params, reader, info, flowID, audioTrack{})
 	}
 	if info.Config.Common.Format != mxl.FormatVideo {
 		return fmt.Errorf("flow %s is neither video nor audio (format=%s)",
 			flowID, info.Config.Common.Format)
 	}
 
+	if u.audioFlowID != "" {
+		return s.runJoined(params, inst, reader, info, u)
+	}
+	return s.runVideo(params, inst, reader, info, flowID, videoTrack{})
+}
+
+// videoMedia describes the H.264 track a video flow is published as.
+func videoMedia() *description.Media {
+	return &description.Media{
+		Type: description.MediaTypeVideo,
+		Formats: []format.Format{&format.H264{
+			PayloadTyp:        96,
+			PacketizationMode: 1,
+		}},
+	}
+}
+
+// videoTrack is what runVideo publishes on and where it starts.
+//
+// A solo video path builds both here; a joined path passes its own
+// publisher, carrying the audio media too, and a start index chosen to line
+// up with the audio's on the MXL clock.
+type videoTrack struct {
+	pub *publisher
+	// startIndex is the grain to begin at, or 0 to pick one from the head.
+	startIndex uint64
+}
+
+func (s *Source) runVideo(
+	params defs.StaticSourceRunParams,
+	inst *mxl.Instance,
+	reader *mxl.Reader,
+	info mxl.FlowInfo,
+	flowID string,
+	track videoTrack,
+) error {
 	defJSON, err := inst.FlowDef(flowID)
 	if err != nil {
 		return fmt.Errorf("read flow def: %w", err)
@@ -148,13 +186,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		return fmt.Errorf("v210 unpacker: %w", err)
 	}
 
-	media := &description.Media{
-		Type: description.MediaTypeVideo,
-		Formats: []format.Format{&format.H264{
-			PayloadTyp:        96,
-			PacketizationMode: 1,
-		}},
-	}
+	media := videoMedia()
 
 	rtpEnc := &rtph264.Encoder{
 		PayloadType:    96,
@@ -167,9 +199,13 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 	// State owned by the OnData callback. OnData runs on the encoder's
 	// reader goroutine; nothing else touches these.
-	var subStream *stream.SubStream
-	var startNTPSet bool
-	var startNTP time.Time
+	pub := track.pub
+	if pub == nil {
+		pub = &publisher{parent: s.Parent, medias: []*description.Media{media}}
+		defer pub.close()
+	}
+
+	var published bool
 	clock := ptsClock{rateNum: rate.Num, rateDen: rate.Den}
 	pending := &pendingIndices{}
 	var warnedStarved, warnedStalled bool
@@ -194,7 +230,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			// The writer's head index has been seen stepping backwards.
 			// ticks() clamps so the muxers still get a strictly
 			// increasing timestamp, but the fault is worth naming once.
-			if !warnedStalled && startNTPSet && ptsTicks == before+1 {
+			if !warnedStalled && published && ptsTicks == before+1 {
 				warnedStalled = true
 				s.Log(logger.Warn, "grain %d did not advance the timeline; "+
 					"the writer's head index has gone backwards", index)
@@ -211,44 +247,17 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			ptsTicks = clock.advance()
 		}
 
-		if !startNTPSet {
-			startNTP = time.Now()
-			startNTPSet = true
-		}
-		// NTP follows PTS rather than the wall clock, so the absolute
-		// timestamps downstream reads are as uniform as the timeline.
-		ntp := startNTP.Add(time.Duration(ptsTicks) * time.Second / rtpClockRate)
-
 		pkts, rtpErr := rtpEnc.Encode(au)
 		if rtpErr != nil {
 			s.Log(logger.Error, "rtp encode: %v", rtpErr)
 			return
 		}
-		if subStream == nil {
-			res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
-				Desc:          &description.Session{Medias: []*description.Media{media}},
-				UseRTPPackets: true,
-			})
-			if res.Err != nil {
-				panic("should not happen")
-			}
-			subStream = res.SubStream
-		}
 		for _, pkt := range pkts {
-			pkt.Timestamp = uint32(ptsTicks)
-			subStream.WriteUnit(media, media.Formats[0], &unit.Unit{
-				PTS:        ptsTicks,
-				NTP:        ntp,
-				RTPPackets: []*rtp.Packet{pkt},
-			})
+			pkt.Timestamp = uint32(ptsTicks) //nolint:gosec // wraps by design
 		}
+		pub.write(media, ptsTicks, rtpClockRate, pkts)
+		published = true
 	}
-
-	defer func() {
-		if subStream != nil {
-			s.Parent.SetNotReady(defs.PathSourceStaticSetNotReadyReq{})
-		}
-	}()
 
 	enc, err := NewH264Encoder(encoderParamsFromConf(params.Conf, width, height, rate, onData))
 	if err != nil {
@@ -289,6 +298,11 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	idx, err := freshestIndex()
 	if err != nil {
 		return fmt.Errorf("initial sync: %w", err)
+	}
+	if track.startIndex != 0 {
+		// A joined path chose this to line up with the audio track, so take
+		// it rather than picking off the head independently.
+		idx = track.startIndex
 	}
 	var lastIdx uint64
 	// Self-heal watchdog state: started flips true on the first decoded grain;
@@ -471,29 +485,61 @@ func encoderParamsFromConf(
 	}
 }
 
+// mxlURL is what an mxl:// source string names: a domain, the flow to read,
+// and optionally a second flow whose audio is published on the same path.
+type mxlURL struct {
+	domain      string
+	flowID      string
+	audioFlowID string
+}
+
 // parseMXLURL accepts URLs of the form:
 //
 //	mxl:///<absolute-domain-path>/<flow-uuid>
-func parseMXLURL(s string) (domain, flowID string, err error) {
-	u, err := url.Parse(s)
+//	mxl:///<absolute-domain-path>/<video-uuid>?audio=<audio-uuid>
+func parseMXLURL(s string) (u mxlURL, err error) {
+	parsed, err := url.Parse(s)
 	if err != nil {
-		return "", "", fmt.Errorf("parse mxl URL: %w", err)
+		return mxlURL{}, fmt.Errorf("parse mxl URL: %w", err)
 	}
-	if u.Scheme != "mxl" {
-		return "", "", fmt.Errorf("not an mxl:// URL: %s", s)
+	if parsed.Scheme != "mxl" {
+		return mxlURL{}, fmt.Errorf("not an mxl:// URL: %s", s)
 	}
-	if u.Host != "" {
-		return "", "", fmt.Errorf("mxl URL host must be empty (use mxl:///path/flow), got %q", u.Host)
+	if parsed.Host != "" {
+		return mxlURL{}, fmt.Errorf("mxl URL host must be empty (use mxl:///path/flow), got %q", parsed.Host)
 	}
-	path := u.Path
+
+	path := parsed.Path
 	i := strings.LastIndex(path, "/")
 	if i <= 0 {
-		return "", "", fmt.Errorf("mxl URL path must contain /<domain>/<flow-uuid>: %s", s)
+		return mxlURL{}, fmt.Errorf("mxl URL path must contain /<domain>/<flow-uuid>: %s", s)
 	}
-	domain = path[:i]
-	flowID = path[i+1:]
-	if domain == "" || flowID == "" {
-		return "", "", fmt.Errorf("mxl URL path malformed: %s", s)
+	u.domain = path[:i]
+	u.flowID = path[i+1:]
+	if u.domain == "" || u.flowID == "" {
+		return mxlURL{}, fmt.Errorf("mxl URL path malformed: %s", s)
 	}
-	return domain, flowID, nil
+
+	// An unknown query is refused rather than ignored. The audio flow of a
+	// joined path is carried here, so a typo in the key would otherwise
+	// publish picture only and look like the audio flow was the problem.
+	q := parsed.Query()
+	for key := range q {
+		if key != "audio" {
+			return mxlURL{}, fmt.Errorf("mxl URL carries unknown query %q: %s", key, s)
+		}
+	}
+	if vals := q["audio"]; len(vals) > 0 {
+		if len(vals) > 1 {
+			return mxlURL{}, fmt.Errorf("mxl URL names %d audio flows, one at most: %s", len(vals), s)
+		}
+		u.audioFlowID = vals[0]
+		if u.audioFlowID == "" {
+			return mxlURL{}, fmt.Errorf("mxl URL carries an empty audio flow id: %s", s)
+		}
+		if u.audioFlowID == u.flowID {
+			return mxlURL{}, fmt.Errorf("mxl URL joins flow %s to itself", u.flowID)
+		}
+	}
+	return u, nil
 }
