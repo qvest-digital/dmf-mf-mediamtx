@@ -164,29 +164,54 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	var subStream *stream.SubStream
 	var startNTPSet bool
 	var startNTP time.Time
-	var lastPTS int64 = -1
+	clock := ptsClock{rateNum: rate.Num, rateDen: rate.Den}
+	pending := &pendingIndices{}
+	var warnedStarved, warnedStalled bool
 
 	onData := func(au [][]byte) {
 		if len(au) == 0 {
 			return
 		}
-		// Wall-clock-derived PTS keeps timing correct even when the
-		// consumer drops grains under CPU pressure (see freshest-grain
-		// strategy in the main loop below). Two AUs may land in the
-		// same 90 kHz tick when the encoder bursts; clamp so PTS stays
-		// strictly monotonic (downstream RTSP/HLS muxers require it).
-		now := time.Now()
+		// PTS comes from the grain's own index rather than from the
+		// moment the access unit left ffmpeg. Read and encode times
+		// jitter by milliseconds on a loaded node, and stamping that
+		// jitter onto the timeline is what a player renders as uneven
+		// motion at an otherwise clean frame rate. The index also
+		// survives the freshest-grain strategy in the loop below: a
+		// dropped grain advances it by more than one, so the timeline
+		// keeps pace with real time instead of falling behind by every
+		// frame that was skipped.
+		var ptsTicks int64
+		if index, ok := pending.pop(); ok {
+			before := clock.last
+			ptsTicks = clock.ticks(index)
+			// The writer's head index has been seen stepping backwards.
+			// ticks() clamps so the muxers still get a strictly
+			// increasing timestamp, but the fault is worth naming once.
+			if !warnedStalled && startNTPSet && ptsTicks == before+1 {
+				warnedStalled = true
+				s.Log(logger.Warn, "grain %d did not advance the timeline; "+
+					"the writer's head index has gone backwards", index)
+			}
+		} else {
+			// One access unit per input frame is what the encoder's
+			// flags promise. Carry on at the nominal cadence rather
+			// than dropping the frame if that ever stops holding.
+			if !warnedStarved {
+				warnedStarved = true
+				s.Log(logger.Warn, "access unit with no grain queued; "+
+					"PTS continues at the nominal rate")
+			}
+			ptsTicks = clock.advance()
+		}
+
 		if !startNTPSet {
-			startNTP = now
+			startNTP = time.Now()
 			startNTPSet = true
 		}
-		elapsed := now.Sub(startNTP)
-		ptsTicks := elapsed.Nanoseconds() * 90000 / int64(time.Second)
-		if ptsTicks <= lastPTS {
-			ptsTicks = lastPTS + 1
-		}
-		lastPTS = ptsTicks
-		ntp := now
+		// NTP follows PTS rather than the wall clock, so the absolute
+		// timestamps downstream reads are as uniform as the timeline.
+		ntp := startNTP.Add(time.Duration(ptsTicks) * time.Second / rtpClockRate)
 
 		pkts, rtpErr := rtpEnc.Encode(au)
 		if rtpErr != nil {
@@ -393,6 +418,14 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 				return fmt.Errorf("resync: %w", err)
 			}
 			continue
+		}
+
+		// Queue the index before the frame, so the encoder's goroutine
+		// can never pop for an access unit whose frame has not been
+		// recorded yet.
+		if !pending.push(grain.Index) {
+			return fmt.Errorf("encoder is %d frames behind; access units are not "+
+				"coming back one per frame", pending.depth())
 		}
 
 		err = enc.Encode(yPlane, cbPlane, crPlane)
