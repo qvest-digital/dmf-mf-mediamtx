@@ -85,6 +85,11 @@ func buildOpusArgs(p AudioEncoderParams) []string {
 		"-i", "pipe:0",
 		"-c:a", "libopus",
 		"-b:a", strconv.FormatUint(uint64(bitrate), 10),
+		// Pinned rather than left to libopus's default, because the source
+		// advances PTS by exactly one frame per packet within a contiguous
+		// run. opusFrameSamples is that duration; letting ffmpeg choose would
+		// make the two disagree silently.
+		"-frame_duration", "20",
 		// RTP Opus is 48 kHz whatever the flow declares.
 		"-ar", strconv.FormatUint(opusClockRate, 10),
 		// No bare-packet muxer exists; oggOpusExtractor undoes this framing.

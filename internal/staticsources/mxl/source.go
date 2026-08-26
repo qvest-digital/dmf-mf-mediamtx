@@ -111,8 +111,14 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	if err != nil {
 		return fmt.Errorf("read flow info: %w", err)
 	}
+	// Audio is a continuous flow read as samples rather than grains, and it
+	// publishes Opus rather than H.264, so it takes its own path from here.
+	if info.Config.Common.Format == mxl.FormatAudio {
+		return s.runAudio(params, reader, info, flowID)
+	}
 	if info.Config.Common.Format != mxl.FormatVideo {
-		return fmt.Errorf("flow %s is not video (format=%s)", flowID, info.Config.Common.Format)
+		return fmt.Errorf("flow %s is neither video nor audio (format=%s)",
+			flowID, info.Config.Common.Format)
 	}
 
 	defJSON, err := inst.FlowDef(flowID)
