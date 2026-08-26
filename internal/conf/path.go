@@ -347,6 +347,8 @@ type Path struct {
 	MXLH264Profile   string `json:"mxlH264Profile"`
 	MXLH264Bitrate   uint   `json:"mxlH264Bitrate"`
 	MXLH264IDRPeriod uint   `json:"mxlH264IDRPeriod"`
+	MXLOpusBitrate   uint   `json:"mxlOpusBitrate"`
+	MXLAudioChannels string `json:"mxlAudioChannels"`
 
 	// Hooks
 	RunOnInit                  string   `json:"runOnInit"`
@@ -430,6 +432,10 @@ func (pconf *Path) setDefaults() {
 	pconf.MXLH264Profile = "high"
 	pconf.MXLH264Bitrate = 5000000
 	pconf.MXLH264IDRPeriod = 0
+	pconf.MXLOpusBitrate = 128000
+	// Empty means the flow's first pair. RTP Opus carries two channels at
+	// most, so a wider flow is heard a pair at a time whatever is set here.
+	pconf.MXLAudioChannels = ""
 
 	// Hooks
 	pconf.RunOnDemandStartTimeout = 10 * Duration(time.Second)
@@ -826,6 +832,10 @@ func (pconf *Path) validate(
 		case "baseline", "main", "high":
 		default:
 			return fmt.Errorf("invalid 'mxlH264Profile' value")
+		}
+
+		if _, err := ParseAudioChannels(pconf.MXLAudioChannels); err != nil {
+			return fmt.Errorf("invalid 'mxlAudioChannels' value: %w", err)
 		}
 
 	default:

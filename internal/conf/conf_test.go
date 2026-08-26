@@ -86,6 +86,7 @@ func TestConfFromFile(t *testing.T) {
 			MXLH264Preset:              "veryfast",
 			MXLH264Profile:             "high",
 			MXLH264Bitrate:             5000000,
+			MXLOpusBitrate:             128000,
 			RunOnDemandStartTimeout:    5 * Duration(time.Second),
 			RunOnDemandCloseAfter:      10 * Duration(time.Second),
 		}, pa)

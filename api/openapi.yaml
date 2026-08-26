@@ -958,6 +958,8 @@ components:
           description: MPEG-TS source
           nullable: true
           deprecated: true
+        mxlAudioChannels:
+          type: string
         mxlCodec:
           type: string
         mxlFFmpegPath:
@@ -973,6 +975,9 @@ components:
           type: string
         mxlH264Profile:
           type: string
+        mxlOpusBitrate:
+          type: integer
+          format: uint64
         name:
           type: string
           description: filled by Validate()
