@@ -8,14 +8,13 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/pion/rtp"
+	"github.com/qvest-digital/go-mxl/mxl"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/stream"
 	"github.com/bluenviron/mediamtx/internal/unit"
-
-	mxl "github.com/qvest-digital/go-mxl/mxl"
 )
 
 const (
@@ -100,7 +99,7 @@ func interleaveFragments(frags [][2][]byte, count int, dst []byte) error {
 				slot, len(f1)+len(f2), count*sampleSize)
 		}
 		off := slot * sampleSize
-		for i := 0; i < count; i++ {
+		for i := range count {
 			src, at := f1, i*sampleSize
 			if at >= len(f1) {
 				src, at = f2, at-len(f1)
