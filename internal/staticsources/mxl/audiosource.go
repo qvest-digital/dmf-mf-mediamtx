@@ -13,8 +13,6 @@ import (
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
-	"github.com/bluenviron/mediamtx/internal/stream"
-	"github.com/bluenviron/mediamtx/internal/unit"
 )
 
 const (
@@ -125,6 +123,17 @@ func interleave(view *mxl.SamplesView, channels []uint64, count int, dst []byte)
 	return interleaveFragments(frags, count, dst)
 }
 
+// audioMedia describes the Opus track an audio flow is published as.
+func audioMedia(channels int) *description.Media {
+	return &description.Media{
+		Type: description.MediaTypeAudio,
+		Formats: []format.Format{&format.Opus{
+			PayloadTyp:   96,
+			ChannelCount: channels,
+		}},
+	}
+}
+
 // runAudio publishes a continuous MXL flow as one Opus track.
 //
 // The shape mirrors the video path: read from the flow's own clock, encode
@@ -132,11 +141,23 @@ func interleave(view *mxl.SamplesView, channels []uint64, count int, dst []byte)
 // arrival time. What differs is that samples are continuous, so the reader
 // consumes a contiguous range and advances by exactly what it took, and a
 // discontinuity is a deliberate resync rather than the normal case.
+// audioTrack is what runAudio publishes on and where it starts.
+//
+// A solo audio path builds both here; a joined path passes its own publisher,
+// carrying the video media too, and a start index chosen to line up with the
+// video's on the MXL clock.
+type audioTrack struct {
+	pub *publisher
+	// startIndex is the sample to begin at, or 0 to pick one from the head.
+	startIndex uint64
+}
+
 func (s *Source) runAudio(
 	params defs.StaticSourceRunParams,
 	reader *mxl.Reader,
 	info mxl.FlowInfo,
 	flowID string,
+	track audioTrack,
 ) error {
 	rate := info.Config.Common.GrainRate
 	if rate.Num <= 0 || rate.Den <= 0 {
@@ -157,17 +178,12 @@ func (s *Source) runAudio(
 	s.Log(logger.Info, "flow %s carries %d channels at %d/%d Hz, publishing %v",
 		flowID, channelCount, rate.Num, rate.Den, channels)
 
-	media := &description.Media{
-		Type: description.MediaTypeAudio,
-		Formats: []format.Format{&format.Opus{
-			PayloadTyp:   96,
-			ChannelCount: len(channels),
-		}},
+	media := audioMedia(len(channels))
+	pub := track.pub
+	if pub == nil {
+		pub = &publisher{parent: s.Parent, medias: []*description.Media{media}}
+		defer pub.close()
 	}
-
-	var subStream *stream.SubStream
-	var startNTPSet bool
-	var startNTP time.Time
 	// pts is the running Opus timestamp. Within a contiguous run it advances
 	// one frame per packet; a resync re-anchors it to the sample clock, which
 	// is what keeps the timeline honest when the reader has to skip.
@@ -180,46 +196,19 @@ func (s *Source) runAudio(
 			reanchor = -1
 		}
 
-		if !startNTPSet {
-			startNTP = time.Now()
-			startNTPSet = true
-		}
-		ntp := startNTP.Add(time.Duration(pts) * time.Second / opusClockRate)
-
-		if subStream == nil {
-			res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
-				Desc:          &description.Session{Medias: []*description.Media{media}},
-				UseRTPPackets: true,
-			})
-			if res.Err != nil {
-				return
-			}
-			subStream = res.SubStream
-		}
-
-		subStream.WriteUnit(media, media.Formats[0], &unit.Unit{
-			PTS: pts,
-			NTP: ntp,
-			RTPPackets: []*rtp.Packet{{
-				Header: rtp.Header{
-					Version:        2,
-					Marker:         true,
-					PayloadType:    96,
-					SequenceNumber: uint16(pts / opusFrameSamples), //nolint:gosec // wraps by design
-					Timestamp:      uint32(pts),                    //nolint:gosec // wraps by design
-				},
-				Payload: pkt,
-			}},
-		})
+		pub.write(media, pts, opusClockRate, []*rtp.Packet{{
+			Header: rtp.Header{
+				Version:        2,
+				Marker:         true,
+				PayloadType:    96,
+				SequenceNumber: uint16(pts / opusFrameSamples), //nolint:gosec // wraps by design
+				Timestamp:      uint32(pts),                    //nolint:gosec // wraps by design
+			},
+			Payload: pkt,
+		}})
 
 		pts += opusFrameSamples
 	}
-
-	defer func() {
-		if subStream != nil {
-			s.Parent.SetNotReady(defs.PathSourceStaticSetNotReadyReq{})
-		}
-	}()
 
 	enc, err := NewOpusEncoder(AudioEncoderParams{
 		FFmpegPath:   params.Conf.MXLFFmpegPath,
@@ -258,6 +247,14 @@ func (s *Source) runAudio(
 	var firstSample uint64
 
 	resync := func() error {
+		if !started && track.startIndex != 0 {
+			// A joined path chose this to line up with the video track, so
+			// take it rather than picking off the head independently.
+			next = track.startIndex
+			firstSample = next
+			reanchor = 0
+			return nil
+		}
 		rt, rerr := reader.Runtime()
 		if rerr != nil {
 			return rerr
