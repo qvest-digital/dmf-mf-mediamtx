@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.6](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.5...mxl-v1.0.0-rc.6) (2026-08-27)
+
+
+### Bug Fixes
+
+* **mxl source:** write a joined path with the media it registered ([#30](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/30)) ([6ca8ed2](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/6ca8ed22258fa85049aa1a19273ec8308849be00))
+
 ## [1.0.0-rc.5](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.4...mxl-v1.0.0-rc.5) (2026-08-27)
 
 
