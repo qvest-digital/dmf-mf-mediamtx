@@ -148,6 +148,9 @@ func audioMedia(channels int) *description.Media {
 // video's on the MXL clock.
 type audioTrack struct {
 	pub *publisher
+	// media is the description the publisher was created with. See videoTrack
+	// for why writing with any other pointer is fatal to the whole server.
+	media *description.Media
 	// startIndex is the sample to begin at, or 0 to pick one from the head.
 	startIndex uint64
 }
@@ -178,11 +181,13 @@ func (s *Source) runAudio(
 	s.Log(logger.Info, "flow %s carries %d channels at %d/%d Hz, publishing %v",
 		flowID, channelCount, rate.Num, rate.Den, channels)
 
-	media := audioMedia(len(channels))
-	pub := track.pub
+	media, pub := track.media, track.pub
 	if pub == nil {
+		media = audioMedia(len(channels))
 		pub = &publisher{parent: s.Parent, medias: []*description.Media{media}}
 		defer pub.close()
+	} else if media == nil {
+		return errors.New("joined audio track carries a publisher but no media")
 	}
 	// pts is the running Opus timestamp. Within a contiguous run it advances
 	// one frame per packet; a resync re-anchors it to the sample clock, which

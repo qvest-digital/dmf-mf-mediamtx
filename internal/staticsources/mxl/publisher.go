@@ -1,6 +1,7 @@
 package mxl
 
 import (
+	"slices"
 	"sync"
 	"time"
 
@@ -66,6 +67,15 @@ func (p *publisher) acquire() (*stream.SubStream, time.Time, bool) {
 // joined path stay in step with each other rather than each with its own
 // encoder's output lag.
 func (p *publisher) write(media *description.Media, pts int64, clockRate int64, pkts []*rtp.Packet) {
+	// A substream keys its writers on the media pointer, and looks the result
+	// up without checking it: a media it was not created with resolves to a
+	// nil entry and dereferences it, which kills the process and every other
+	// path on it rather than this one. Refusing here keeps a wiring mistake
+	// on the path that made it.
+	if !slices.Contains(p.medias, media) {
+		return
+	}
+
 	sub, anchor, ok := p.acquire()
 	if !ok {
 		return
