@@ -140,6 +140,27 @@ func videoMedia() *description.Media {
 	}
 }
 
+// newRTPEncoder builds the H.264 packetizer for the track videoMedia
+// describes.
+//
+// PacketizationMode is stated rather than left at its zero value. The two have
+// to agree: the format advertises mode 1 in its fmtp, so a packetizer running
+// in another mode would fragment in a way the receiver was never told about.
+// gortsplib refuses anything but 1, and previously accepted the zero value, so
+// this became a hard failure on a dependency bump rather than on a change
+// here, and nothing caught it because nothing built the encoder outside Run.
+func newRTPEncoder(maxPayloadSize int) (*rtph264.Encoder, error) {
+	enc := &rtph264.Encoder{
+		PayloadType:       96,
+		PayloadMaxSize:    maxPayloadSize,
+		PacketizationMode: 1,
+	}
+	if err := enc.Init(); err != nil {
+		return nil, err
+	}
+	return enc, nil
+}
+
 // videoTrack is what runVideo publishes on and where it starts.
 //
 // A solo video path builds both here; a joined path passes its own
@@ -188,11 +209,7 @@ func (s *Source) runVideo(
 
 	media := videoMedia()
 
-	rtpEnc := &rtph264.Encoder{
-		PayloadType:    96,
-		PayloadMaxSize: s.RTPMaxPayloadSize,
-	}
-	err = rtpEnc.Init()
+	rtpEnc, err := newRTPEncoder(s.RTPMaxPayloadSize)
 	if err != nil {
 		return fmt.Errorf("rtp encoder: %w", err)
 	}
