@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.5](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.4...mxl-v1.0.0-rc.5) (2026-08-27)
+
+
+### Bug Fixes
+
+* **mxl source:** state the RTP packetization mode ([#28](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/28)) ([fbb3319](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/fbb331988fdd5a61807cd675541e5b8bef3ae8e5))
+
 ## [1.0.0-rc.4](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.3...mxl-v1.0.0-rc.4) (2026-08-26)
 
 
