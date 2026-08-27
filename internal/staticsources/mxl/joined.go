@@ -137,11 +137,11 @@ func (s *Source) runJoined(
 	errs := make(chan error, 2)
 	go func() {
 		errs <- s.runAudio(audioParams, audioReader, audioInfo, u.audioFlowID,
-			audioTrack{pub: pub, startIndex: audioStart})
+			audioTrack{pub: pub, media: aMedia, startIndex: audioStart})
 	}()
 	go func() {
 		errs <- s.runVideo(videoParams, inst, videoReader, videoInfo, u.flowID,
-			videoTrack{pub: pub, startIndex: videoStart})
+			videoTrack{pub: pub, media: vMedia, startIndex: videoStart})
 	}()
 
 	first := <-errs

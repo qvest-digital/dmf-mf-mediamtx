@@ -168,6 +168,11 @@ func newRTPEncoder(maxPayloadSize int) (*rtph264.Encoder, error) {
 // up with the audio's on the MXL clock.
 type videoTrack struct {
 	pub *publisher
+	// media is the description the publisher was created with. A substream
+	// keys its writers on the pointer, so a track that builds its own
+	// equal-looking media is absent from that map and takes the process down
+	// on its first packet rather than failing on this path alone.
+	media *description.Media
 	// startIndex is the grain to begin at, or 0 to pick one from the head.
 	startIndex uint64
 }
@@ -207,8 +212,6 @@ func (s *Source) runVideo(
 		return fmt.Errorf("v210 unpacker: %w", err)
 	}
 
-	media := videoMedia()
-
 	rtpEnc, err := newRTPEncoder(s.RTPMaxPayloadSize)
 	if err != nil {
 		return fmt.Errorf("rtp encoder: %w", err)
@@ -216,10 +219,13 @@ func (s *Source) runVideo(
 
 	// State owned by the OnData callback. OnData runs on the encoder's
 	// reader goroutine; nothing else touches these.
-	pub := track.pub
+	media, pub := track.media, track.pub
 	if pub == nil {
+		media = videoMedia()
 		pub = &publisher{parent: s.Parent, medias: []*description.Media{media}}
 		defer pub.close()
+	} else if media == nil {
+		return errors.New("joined video track carries a publisher but no media")
 	}
 
 	var published bool
