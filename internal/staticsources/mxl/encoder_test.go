@@ -52,6 +52,19 @@ func TestBuildFFmpegArgsRate(t *testing.T) {
 	}
 }
 
+func TestBuildFFmpegArgsCapsThreads(t *testing.T) {
+	// Without a count of its own x264 takes one and a half per host core and
+	// holds one frame per thread, which is where the latency this bounds
+	// comes from -- and past 64 frames in flight the source stops entirely.
+	args := buildFFmpegArgs(EncoderParams{
+		Width: 1920, Height: 1080,
+		RateNum: 60000, RateDen: 1001,
+		Preset: "veryfast", Profile: "high",
+	})
+	require.Equal(t, "4", argValue(t, args, "-threads"))
+	require.Less(t, encoderThreads, maxPendingIndices)
+}
+
 func TestBuildFFmpegArgsIDRPeriodOverride(t *testing.T) {
 	args := buildFFmpegArgs(EncoderParams{
 		Width: 1920, Height: 1080,

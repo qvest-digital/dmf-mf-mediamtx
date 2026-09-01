@@ -39,7 +39,8 @@ type EncoderParams struct {
 //
 // Because the boundary of NAL unit N is only known once the start code of
 // NAL unit N+1 has been read, there is an inherent one-frame latency
-// between Encode and the corresponding OnData call.
+// between Encode and the corresponding OnData call, on top of the frames
+// x264 holds in flight for its own threading. See encoderThreads.
 type H264Encoder struct {
 	*ffmpegProcess
 	params EncoderParams
@@ -103,6 +104,22 @@ func defaultIDRPeriod(rateNum, rateDen int64) uint32 {
 	return uint32(idr)
 }
 
+// encoderThreads caps x264's frame threading.
+//
+// Left to itself x264 takes one and a half threads per host core, and every
+// frame thread is a frame the encoder holds before the first access unit
+// comes back: the delay is threads-1 frames whatever the picture costs to
+// encode. A 32-core node gives it 48 and a 128-core one its own ceiling of
+// 128, so the same path adds 818 ms of latency on the first and 2.1 s on the
+// second, measured at 1080p59.94. The second also holds more frames than
+// maxPendingIndices allows, so the reader-to-encoder queue overflows and the
+// source restarts rather than encoding at all.
+//
+// Four threads hold three frames, 50 ms at 59.94. Against a noise-heavy
+// 1080p source on four cores they reach 136 fps where 48 threads on the same
+// four reach 152: the throughput the rest buy does not pay for the latency.
+const encoderThreads = 4
+
 // buildFFmpegArgs assembles the ffmpeg command line from params. Kept
 // separate to keep NewH264Encoder readable and to make these knobs easy to
 // inspect in tests.
@@ -123,6 +140,7 @@ func buildFFmpegArgs(p EncoderParams) []string {
 		// Encoder.
 		"-c:v", "libx264",
 		"-preset", p.Preset,
+		"-threads", strconv.Itoa(encoderThreads),
 		"-tune", "zerolatency",
 		"-profile:v", p.Profile,
 		"-pix_fmt", "yuv420p",
