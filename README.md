@@ -29,6 +29,12 @@ counts frames and defaults to half a second of them at that rate; a GOP the
 length of `hlsSegmentDuration` sits on the HLS muxer's cut comparison, which
 makes segments alternate between one and two of them.
 
+x264's frame threading is fixed at four threads and is not configurable. Left
+to itself it takes one and a half threads per host core and holds a frame per
+thread before the first access unit comes back, which is 818 ms of added
+latency at 1080p59.94 on a 32-core node and more frames than the source will
+queue on a 128-core one.
+
 Paths can be added and removed at runtime over the HTTP API with none present
 at boot; a newly added `mxl://` path starts its source immediately.
 
