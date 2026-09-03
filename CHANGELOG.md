@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.7](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.6...mxl-v1.0.0-rc.7) (2026-09-03)
+
+
+### Bug Fixes
+
+* **mxl source:** cap the encoder's frame threading ([#32](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/32)) ([d1763be](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/d1763be8ca356e3f44ca9b4d1cc3e3452c7e18e6))
+
 ## [1.0.0-rc.6](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.5...mxl-v1.0.0-rc.6) (2026-08-27)
 
 
