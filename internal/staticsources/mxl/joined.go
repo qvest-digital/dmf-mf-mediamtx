@@ -43,7 +43,10 @@ var errUnalignedClocks = errors.New("flows do not share an index epoch")
 // index outside its flow's ring is not a start but evidence that the two
 // index spaces are not commensurable, and alignStarts reports
 // errUnalignedClocks rather than returning a position that cannot be read.
-func alignStarts(videoRate, audioRate mxl.Rational, videoIdx, audioIdx, videoRing, audioRing uint64) (uint64, uint64, error) {
+func alignStarts(
+	videoRate, audioRate mxl.Rational,
+	videoIdx, audioIdx, videoRing, audioRing uint64,
+) (uint64, uint64, error) {
 	videoTS := mxl.IndexToTimestamp(videoRate, videoIdx)
 	audioTS := mxl.IndexToTimestamp(audioRate, audioIdx)
 	if !usableTimestamp(videoTS) || !usableTimestamp(audioTS) {
