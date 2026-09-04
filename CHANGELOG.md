@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.9](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.8...mxl-v1.0.0-rc.9) (2026-09-04)
+
+
+### Bug Fixes
+
+* **mxl source:** play joined flows that cannot be aligned ([#36](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/36)) ([8cf0fa6](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/8cf0fa6e4a0cfad9d5be77364781e8ba60ffc124))
+
 ## [1.0.0-rc.8](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.7...mxl-v1.0.0-rc.8) (2026-09-04)
 
 
