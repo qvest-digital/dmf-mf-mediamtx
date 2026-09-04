@@ -1,6 +1,7 @@
 package mxl
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -190,7 +191,7 @@ func TestAlignStartsRejectsAFlowLaggingBeyondItsRing(t *testing.T) {
 
 	_, _, err := alignStarts(videoRate, audioRate, backOff(videoIdx, 1),
 		backOff(lagging, audioSafetyMargin), testVideoRing, testAudioRing)
-	require.ErrorIs(t, err, errUnalignedClocks)
+	require.ErrorIs(t, err, errNoCommonStart)
 }
 
 // A flow counting from its own creation and one counting from the ST 2059
@@ -210,13 +211,13 @@ func TestAlignStartsRejectsFlowsOnDifferentEpochs(t *testing.T) {
 
 	_, _, err := alignStarts(videoRate, audioRate, backOff(videoIdx, 1),
 		backOff(sinceCreation, audioSafetyMargin), testVideoRing, testAudioRing)
-	require.ErrorIs(t, err, errUnalignedClocks)
+	require.ErrorIs(t, err, errNoCommonStart)
 
 	// And the same the other way round, so neither ordering slips through.
 	audioIdx := mxl.CurrentIndex(audioRate)
 	_, _, err = alignStarts(videoRate, audioRate, backOff(3600*60, 1),
 		backOff(audioIdx, audioSafetyMargin), testVideoRing, testAudioRing)
-	require.ErrorIs(t, err, errUnalignedClocks)
+	require.ErrorIs(t, err, errNoCommonStart)
 }
 
 func TestReadable(t *testing.T) {
@@ -228,4 +229,110 @@ func TestReadable(t *testing.T) {
 	require.False(t, readable(89, 100, 10))
 	// Past the flow's own start is data the writer has not produced.
 	require.False(t, readable(101, 100, 10))
+}
+
+// A flow nothing has written to yet sits at index 0, which converts to
+// timestamp 0 at every rate. That is the ordinary state of a path opened
+// before its producer has started, and it must not be reported as a rate
+// fault: the rates are fine and the operator sent to check them finds nothing.
+func TestAlignStartsReportsAnEmptyFlowWithoutBlamingTheRate(t *testing.T) {
+	videoRate := mxl.Rational{Num: 24, Den: 1}
+	audioRate := mxl.Rational{Num: 48000, Den: 1}
+
+	videoIdx := mxl.CurrentIndex(videoRate)
+	audioIdx := mxl.CurrentIndex(audioRate)
+
+	for _, ca := range []struct {
+		name  string
+		video uint64
+		audio uint64
+	}{
+		{"video has no grains", 0, backOff(audioIdx, audioSafetyMargin)},
+		{"audio has no samples", backOff(videoIdx, 1), 0},
+		{"neither has been written", 0, 0},
+	} {
+		t.Run(ca.name, func(t *testing.T) {
+			_, _, err := alignStarts(videoRate, audioRate, ca.video, ca.audio,
+				testVideoRing, testAudioRing)
+			require.ErrorIs(t, err, errNoCommonStart)
+			require.NotContains(t, err.Error(), "rate",
+				"an unwritten flow is not a rate fault and must not be reported as one")
+		})
+	}
+}
+
+// The pairing seen in the field is 24 fps video against 48 kHz audio. Nothing
+// about it is special: it maps onto the MXL clock and round-trips like any
+// other, so it has to align rather than fall back.
+func TestAlignStartsAlignsTheFieldRatePairings(t *testing.T) {
+	audioRate := mxl.Rational{Num: 48000, Den: 1}
+
+	for _, videoRate := range []mxl.Rational{
+		{Num: 24, Den: 1},
+		{Num: 24000, Den: 1001},
+	} {
+		t.Run(fmt.Sprintf("%d/%d", videoRate.Num, videoRate.Den), func(t *testing.T) {
+			videoIdx := mxl.CurrentIndex(videoRate)
+			audioIdx := mxl.CurrentIndex(audioRate)
+			require.NotEqual(t, mxl.UndefinedIndex, videoIdx)
+
+			videoStart := backOff(videoIdx, 1)
+			audioStart := backOff(audioIdx, audioSafetyMargin)
+
+			v, a, err := alignStarts(videoRate, audioRate, videoStart, audioStart,
+				testVideoRing, testAudioRing)
+			require.NoError(t, err)
+			require.LessOrEqual(t, v, videoStart)
+			require.LessOrEqual(t, a, audioStart)
+		})
+	}
+}
+
+// Whatever stops the two being aligned, the caller has to be able to carry on
+// and play them unaligned. A failure that does not wrap errNoCommonStart is
+// one runJoined would have no way to tell apart from a fatal fault, and the
+// path would be torn down and retried for as long as the condition lasted.
+func TestAlignStartsAlwaysLetsThePathOpen(t *testing.T) {
+	audioRate := mxl.Rational{Num: 48000, Den: 1}
+	videoRate := mxl.Rational{Num: 24, Den: 1}
+	videoIdx := mxl.CurrentIndex(videoRate)
+	audioIdx := mxl.CurrentIndex(audioRate)
+
+	// Rates libmxl cannot place an index on at all: it returns
+	// UndefinedIndex for each of these.
+	unmappable := mxl.Rational{Num: 0, Den: 1}
+
+	for _, ca := range []struct {
+		name                               string
+		videoRate, audioRate               mxl.Rational
+		video, audio, videoRing, audioRing uint64
+	}{
+		{
+			"an unwritten video flow", videoRate, audioRate,
+			0, backOff(audioIdx, audioSafetyMargin), testVideoRing, testAudioRing,
+		},
+		{
+			"a video rate that does not map", unmappable, audioRate,
+			backOff(videoIdx, 1), backOff(audioIdx, audioSafetyMargin), testVideoRing, testAudioRing,
+		},
+		{
+			"an audio rate that does not map", videoRate, unmappable,
+			backOff(videoIdx, 1), backOff(audioIdx, audioSafetyMargin), testVideoRing, testAudioRing,
+		},
+		{
+			"a flow lagging beyond its ring", videoRate, audioRate,
+			backOff(videoIdx, 1), backOff(audioIdx-30*48000, audioSafetyMargin), testVideoRing, testAudioRing,
+		},
+		{
+			"flows on different epochs", videoRate, audioRate,
+			backOff(videoIdx, 1), backOff(3600*48000, audioSafetyMargin), testVideoRing, testAudioRing,
+		},
+	} {
+		t.Run(ca.name, func(t *testing.T) {
+			_, _, err := alignStarts(ca.videoRate, ca.audioRate, ca.video, ca.audio,
+				ca.videoRing, ca.audioRing)
+			require.ErrorIs(t, err, errNoCommonStart,
+				"every alignment failure has to be one the caller can play through")
+		})
+	}
 }
