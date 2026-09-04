@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.8](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.7...mxl-v1.0.0-rc.8) (2026-09-04)
+
+
+### Bug Fixes
+
+* **mxl source:** align joined tracks on the earlier flow instant ([#34](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/34)) ([a212338](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/a2123387b0ae2b9cfa6e9de1ed1254444d790f51))
+
 ## [1.0.0-rc.7](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.6...mxl-v1.0.0-rc.7) (2026-09-03)
 
 
