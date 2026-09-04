@@ -13,36 +13,76 @@ import (
 	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
+// errUnalignedClocks reports that two flows do not count their indices from a
+// common epoch, so no single instant can be named in both index spaces. A flow
+// anchored to the ST 2059 epoch and one counting from its own creation are both
+// valid on their own and have no instant in common.
+var errUnalignedClocks = errors.New("flows do not share an index epoch")
+
 // alignStarts picks the index each flow should begin at so that the two land
 // at the same instant.
 //
 // Both indices count on their own flow's rate and neither is comparable to
 // the other, but libmxl maps either onto one absolute clock: IndexToTimestamp
 // gives nanoseconds since the ST 2059 epoch, and TimestampToIndex comes back.
-// So the later of the two starting points is converted once and the other is
+// So one of the two starting points is converted once and the other is
 // derived from it, and from then on each track advances by exact rational
 // arithmetic on its own rate. Doing it this way round keeps the sub-tick
 // precision that converting every timestamp through nanoseconds would lose.
 //
 // This is what makes lip-sync a property of the flows rather than of the two
 // encoders' output lag, which is what the wall clock would have measured.
-func alignStarts(videoRate, audioRate mxl.Rational, videoIdx, audioIdx uint64) (uint64, uint64, error) {
+//
+// The instant is the earlier of the two, because it has to be one both flows
+// have already written. Deriving it from the later start places the other
+// flow's reader past its own head, waiting on entries the writer has not
+// produced: the read never completes, no sample reaches the encoder, and the
+// track fails without ever having been behind.
+//
+// videoRing and audioRing are how many entries each flow holds. A derived
+// index outside its flow's ring is not a start but evidence that the two
+// index spaces are not commensurable, and alignStarts reports
+// errUnalignedClocks rather than returning a position that cannot be read.
+func alignStarts(
+	videoRate, audioRate mxl.Rational,
+	videoIdx, audioIdx, videoRing, audioRing uint64,
+) (uint64, uint64, error) {
 	videoTS := mxl.IndexToTimestamp(videoRate, videoIdx)
 	audioTS := mxl.IndexToTimestamp(audioRate, audioIdx)
-	if videoTS == 0 || audioTS == 0 {
+	if !usableTimestamp(videoTS) || !usableTimestamp(audioTS) {
 		return 0, 0, errors.New("flow rate does not map onto the MXL clock")
 	}
 
-	// The later start wins: the earlier flow has the data to wait, the later
-	// one does not have data that has not been written yet.
-	epoch := max(videoTS, audioTS)
+	epoch := min(videoTS, audioTS)
 
 	v := mxl.TimestampToIndex(videoRate, epoch)
 	a := mxl.TimestampToIndex(audioRate, epoch)
 	if v == mxl.UndefinedIndex || a == mxl.UndefinedIndex {
 		return 0, 0, errors.New("MXL clock returned no index for the chosen epoch")
 	}
+	if !readable(v, videoIdx, videoRing) || !readable(a, audioIdx, audioRing) {
+		return 0, 0, errUnalignedClocks
+	}
 	return v, a, nil
+}
+
+// usableTimestamp reports whether a timestamp came back from the MXL clock as
+// a real instant. Zero is the value an invalid rate produces, and
+// UndefinedIndex is what the conversion returns when it cannot place the
+// index; neither can be compared against the other flow's.
+func usableTimestamp(ts uint64) bool {
+	return ts != 0 && ts != mxl.UndefinedIndex
+}
+
+// readable reports whether derived is a position the flow can still be read
+// from, given the start it would have used alone and how many entries it
+// holds. Past that start is data the writer has not produced; further back
+// than the ring is data it has already overwritten.
+func readable(derived, own, ring uint64) bool {
+	if derived > own {
+		return false
+	}
+	return own-derived <= ring
 }
 
 // runJoined publishes a video flow and an audio flow as one path with two
@@ -93,9 +133,20 @@ func (s *Source) runJoined(
 	videoStart := backOff(videoRT.HeadIndex, 1)
 	audioStart := backOff(audioRT.HeadIndex, audioSafetyMargin)
 
-	videoStart, audioStart, err = alignStarts(videoRate, audioRate, videoStart, audioStart)
-	if err != nil {
+	v, a, err := alignStarts(videoRate, audioRate, videoStart, audioStart,
+		uint64(videoInfo.Config.Discrete.GrainCount), uint64(audioInfo.Config.Continuous.BufferLength))
+	switch {
+	case errors.Is(err, errUnalignedClocks):
+		// Each track still plays from its own head. Lip-sync is lost, which
+		// is the lesser fault: the alignment these flows would need cannot be
+		// expressed, and a path that plays out of step beats one that never
+		// starts.
+		s.Log(logger.Warn, "flows %s and %s do not share an index epoch, "+
+			"starting each from its own head without lip-sync alignment", u.flowID, u.audioFlowID)
+	case err != nil:
 		return err
+	default:
+		videoStart, audioStart = v, a
 	}
 
 	// Both medias are named up front: a substream carries the set it was
