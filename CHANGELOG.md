@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.10](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.9...mxl-v1.0.0-rc.10) (2026-09-07)
+
+
+### Bug Fixes
+
+* **mxl source:** keep a joined path playing when its audio stops ([#38](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/38)) ([46d6af1](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/46d6af1314192af5b71eb50775d848291a3dc323))
+
 ## [1.0.0-rc.9](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.8...mxl-v1.0.0-rc.9) (2026-09-04)
 
 
