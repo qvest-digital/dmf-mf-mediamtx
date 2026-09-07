@@ -134,6 +134,75 @@ func audioMedia(channels int) *description.Media {
 	}
 }
 
+// audioTimeline is the published Opus timeline of one path.
+//
+// It outlives a single run of runAudio, because a joined path retries its
+// audio track in place rather than taking the path down with it. What has to
+// survive a retry is where the timeline started and how far it has got: a
+// track that came back and began again at zero would publish timestamps the
+// muxers reject and a receiver reads as a new stream.
+//
+// Written only from the encoder's reader goroutine and read by the supervisor
+// between attempts, which joins that goroutine before looking. No lock,
+// because the two never run at once.
+type audioTimeline struct {
+	// epoch is the sample index the timeline calls zero. Zero itself means no
+	// origin was named, so the reader's own starting position becomes one.
+	epoch uint64
+	// live reports whether anything has been published on this timeline.
+	live bool
+	// last is the highest timestamp published on it.
+	last int64
+	// seq is the RTP sequence number of the next packet. A counter rather
+	// than a function of the timestamp: audio that resumes after an outage
+	// jumps the timeline by the length of the outage, and a sequence number
+	// derived from it would jump with it. RFC 3550 has a receiver treat a
+	// jump that large as a different stream and drop packets until two
+	// arrive in order, so the gap in the sound would cost the packets after
+	// it as well.
+	seq uint16
+}
+
+// stamp records one packet on the timeline and returns what to send it with.
+//
+// pts is where the running count has reached and reanchor what the reader's
+// position says it should be, or -1 for nothing pending. The reader's answer
+// wins when it is ahead, which is how samples skipped over cost time on the
+// timeline instead of silently shortening it.
+//
+// It never wins when it is behind. RTSP and HLS both require a strictly
+// increasing timestamp and a receiver reads a backwards jump as a different
+// stream, so a correction that would move the timeline back is worth less
+// than the timeline it would break. The same guard carries the timeline
+// across a restart of the track, which begins its own count at zero.
+func (t *audioTimeline) stamp(pts, reanchor int64) (int64, uint16) {
+	if reanchor > pts {
+		pts = reanchor
+	}
+	if t.live && pts <= t.last {
+		pts = t.last + opusFrameSamples
+	}
+	t.live, t.last = true, pts
+	seq := t.seq
+	t.seq++
+	return pts, seq
+}
+
+// audioTrack is what runAudio publishes on, and the timeline it publishes on.
+//
+// A solo audio path builds both here; a joined path passes its own publisher,
+// carrying the video media too, and a timeline whose origin is the instant the
+// video track is stamped from.
+type audioTrack struct {
+	pub *publisher
+	// media is the description the publisher was created with. See videoTrack
+	// for why writing with any other pointer is fatal to the whole server.
+	media *description.Media
+	// timeline is the path's, or nil on a solo path, which owns one of its own
+	// because nothing else publishes on it.
+	timeline *audioTimeline
+}
+
 // runAudio publishes a continuous MXL flow as one Opus track.
 //
 // The shape mirrors the video path: read from the flow's own clock, encode
@@ -141,20 +210,10 @@ func audioMedia(channels int) *description.Media {
 // arrival time. What differs is that samples are continuous, so the reader
 // consumes a contiguous range and advances by exactly what it took, and a
 // discontinuity is a deliberate resync rather than the normal case.
-// audioTrack is what runAudio publishes on and where it starts.
 //
-// A solo audio path builds both here; a joined path passes its own publisher,
-// carrying the video media too, and a start index chosen to line up with the
-// video's on the MXL clock.
-type audioTrack struct {
-	pub *publisher
-	// media is the description the publisher was created with. See videoTrack
-	// for why writing with any other pointer is fatal to the whole server.
-	media *description.Media
-	// startIndex is the sample to begin at, or 0 to pick one from the head.
-	startIndex uint64
-}
-
+// It returns when the flow stops producing, which on a joined path is not the
+// end of anything: superviseAudio runs it again against a fresh reader while
+// the video track keeps the path online.
 func (s *Source) runAudio(
 	params defs.StaticSourceRunParams,
 	reader *mxl.Reader,
@@ -189,6 +248,13 @@ func (s *Source) runAudio(
 	} else if media == nil {
 		return errors.New("joined audio track carries a publisher but no media")
 	}
+	tl := track.timeline
+	if tl == nil {
+		// A solo path is the only thing that publishes on its timeline, so it
+		// owns one rather than being given one.
+		tl = &audioTimeline{}
+	}
+
 	// pts is the running Opus timestamp. Within a contiguous run it advances
 	// one frame per packet; a resync re-anchors it to the sample clock, which
 	// is what keeps the timeline honest when the reader has to skip.
@@ -196,18 +262,17 @@ func (s *Source) runAudio(
 	var reanchor int64 = -1
 
 	onPacket := func(pkt []byte) {
-		if reanchor >= 0 {
-			pts = reanchor
-			reanchor = -1
-		}
+		var seq uint16
+		pts, seq = tl.stamp(pts, reanchor)
+		reanchor = -1
 
 		pub.write(media, pts, opusClockRate, []*rtp.Packet{{
 			Header: rtp.Header{
 				Version:        2,
 				Marker:         true,
 				PayloadType:    96,
-				SequenceNumber: uint16(pts / opusFrameSamples), //nolint:gosec // wraps by design
-				Timestamp:      uint32(pts),                    //nolint:gosec // wraps by design
+				SequenceNumber: seq,
+				Timestamp:      uint32(pts), //nolint:gosec // wraps by design
 			},
 			Payload: pkt,
 		}})
@@ -247,35 +312,30 @@ func (s *Source) runAudio(
 	var started bool
 	lastProgress := time.Now()
 
-	// firstSample anchors the timeline. Everything downstream is relative to
-	// it, so a flow that has been running for hours starts at zero here.
-	var firstSample uint64
-
+	// resync places the reader at the flow's leading edge and says what that
+	// position is worth on the published timeline.
+	//
+	// Where to read and what the timeline calls that position are separate
+	// questions. The reader always takes the head, which is the only place a
+	// flow can be read from live; the timeline's origin is the path's, taken
+	// once and kept, so a resync here and a restart of this whole call both
+	// land where the flow says they belong rather than back at zero.
 	resync := func() error {
-		if !started && track.startIndex != 0 {
-			// A joined path chose this to line up with the video track, so
-			// take it rather than picking off the head independently.
-			next = track.startIndex
-			firstSample = next
-			reanchor = 0
-			return nil
-		}
 		rt, rerr := reader.Runtime()
 		if rerr != nil {
 			return rerr
 		}
-		if rt.HeadIndex <= audioSafetyMargin {
-			next = 0
-		} else {
-			next = rt.HeadIndex - audioSafetyMargin
+		next = backOff(rt.HeadIndex, audioSafetyMargin)
+		if tl.epoch == 0 || next < tl.epoch {
+			// Nothing named an origin, or the flow has not reached the one it
+			// was given: a position before the origin has no timestamp on
+			// this timeline, so the reader's own becomes the origin instead.
+			tl.epoch = next
 		}
-		if !started {
-			firstSample = next
-		}
-		// Re-anchor the published timeline to where the reader actually
-		// landed, so samples skipped here cost time on the timeline instead
-		// of silently shortening it.
-		reanchor = int64(next-firstSample) * opusClockRate / int64(sampleRate)
+		// Anchor the published timeline to where the reader actually landed,
+		// so samples skipped here cost time on the timeline instead of
+		// silently shortening it.
+		reanchor = int64(next-tl.epoch) * opusClockRate / int64(sampleRate)
 		return nil
 	}
 

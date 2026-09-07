@@ -173,8 +173,10 @@ type videoTrack struct {
 	// equal-looking media is absent from that map and takes the process down
 	// on its first packet rather than failing on this path alone.
 	media *description.Media
-	// startIndex is the grain to begin at, or 0 to pick one from the head.
-	startIndex uint64
+	// epochIndex is the grain the published timeline calls zero, or 0 to let
+	// the first grain read become it. Never where reading starts: that is
+	// always the flow's head, because a live path has nowhere else to begin.
+	epochIndex uint64
 }
 
 func (s *Source) runVideo(
@@ -230,6 +232,12 @@ func (s *Source) runVideo(
 
 	var published bool
 	clock := ptsClock{rateNum: rate.Num, rateDen: rate.Den}
+	if track.epochIndex != 0 {
+		// A joined path named the instant both tracks call zero, so this one
+		// is stamped from there rather than from whichever grain it happens
+		// to read first.
+		clock.first, clock.firstSet = track.epochIndex, true
+	}
 	pending := &pendingIndices{}
 	var warnedStarved, warnedStalled bool
 
@@ -321,11 +329,6 @@ func (s *Source) runVideo(
 	idx, err := freshestIndex()
 	if err != nil {
 		return fmt.Errorf("initial sync: %w", err)
-	}
-	if track.startIndex != 0 {
-		// A joined path chose this to line up with the audio track, so take
-		// it rather than picking off the head independently.
-		idx = track.startIndex
 	}
 	var lastIdx uint64
 	// Self-heal watchdog state: started flips true on the first decoded grain;

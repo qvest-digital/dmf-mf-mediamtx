@@ -108,3 +108,61 @@ func TestInterleaveFragmentsRefusesShortDestination(t *testing.T) {
 	err := interleaveFragments([][2][]byte{{f32(1), nil}, {f32(2), nil}}, 1, make([]byte, 4))
 	require.Error(t, err)
 }
+
+// A contiguous run advances one frame a packet, and the sequence number one
+// per packet, which is all a receiver needs to reassemble it.
+func TestAudioTimelineStampsAContiguousRun(t *testing.T) {
+	tl := &audioTimeline{}
+
+	for i := range 4 {
+		pts, seq := tl.stamp(int64(i)*opusFrameSamples, -1)
+		require.Equal(t, int64(i)*opusFrameSamples, pts)
+		require.Equal(t, uint16(i), seq) //nolint:gosec // small loop bound
+	}
+}
+
+// A re-anchor is what makes samples the reader skipped over cost time on the
+// timeline rather than silently shortening it.
+func TestAudioTimelineFollowsAReanchorForwards(t *testing.T) {
+	tl := &audioTimeline{}
+	tl.stamp(0, 0)
+
+	// The reader resynced two seconds further on.
+	pts, _ := tl.stamp(opusFrameSamples, 2*opusClockRate)
+	require.Equal(t, int64(2*opusClockRate), pts)
+}
+
+// The defect a source that stops and comes back produced: the track was
+// restarted, began its own count at zero, and published a timestamp behind
+// everything already sent. RTSP and HLS both refuse that, and a receiver reads
+// it as a different stream.
+func TestAudioTimelineNeverStepsBackwards(t *testing.T) {
+	tl := &audioTimeline{}
+	tl.stamp(0, 0)
+	tl.stamp(opusFrameSamples, -1)
+
+	// A restarted track: its own count is back at zero and its resync landed
+	// somewhere behind what the timeline has already published.
+	pts, _ := tl.stamp(0, opusFrameSamples/2)
+	require.Greater(t, pts, int64(opusFrameSamples),
+		"a restart must continue the timeline, not restate it")
+
+	// And a re-anchor that lands behind is refused rather than followed.
+	next, _ := tl.stamp(pts+opusFrameSamples, 0)
+	require.Greater(t, next, pts)
+}
+
+// The sequence number is a counter, not a function of the timestamp. Audio
+// resuming after a ten-minute outage jumps the timeline by ten minutes, and a
+// derived sequence number would jump with it: RFC 3550 has a receiver treat a
+// jump that large as a different stream and drop packets until two arrive in
+// order, so the gap in the sound would cost the packets after it as well.
+func TestAudioTimelineSequenceSurvivesAnOutage(t *testing.T) {
+	tl := &audioTimeline{}
+	_, first := tl.stamp(0, 0)
+
+	// Ten minutes later, on a fresh attempt whose own count starts at zero.
+	pts, second := tl.stamp(0, 600*opusClockRate)
+	require.Equal(t, int64(600*opusClockRate), pts)
+	require.Equal(t, first+1, second)
+}
