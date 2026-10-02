@@ -971,6 +971,12 @@ components:
         mxlH264IDRPeriod:
           type: integer
           format: uint64
+        mxlH264MaxHeight:
+          type: integer
+          format: uint64
+        mxlH264MaxRate:
+          type: integer
+          format: uint64
         mxlH264Preset:
           type: string
         mxlH264Profile:

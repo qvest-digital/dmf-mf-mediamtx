@@ -3,6 +3,7 @@ package mxl
 import (
 	"testing"
 
+	"github.com/qvest-digital/go-mxl/mxl"
 	"github.com/stretchr/testify/require"
 )
 
@@ -92,5 +93,48 @@ func TestNewH264EncoderRejectsUnusableRate(t *testing.T) {
 			})
 			require.Error(t, err)
 		})
+	}
+}
+
+func TestBuildFFmpegArgsScalesDownToMaxHeight(t *testing.T) {
+	// A preview seen in a browser tile does not need the flow's full size,
+	// and the encode is what a busy node spends its cores on.
+	args := buildFFmpegArgs(EncoderParams{
+		Width: 1920, Height: 1080,
+		RateNum: 50, RateDen: 1,
+		Preset: "veryfast", Profile: "high",
+		OutHeight: 720,
+	})
+	require.Equal(t, "scale=-2:720", argValue(t, args, "-vf"))
+}
+
+func TestBuildFFmpegArgsNeverScalesUp(t *testing.T) {
+	for _, out := range []uint32{0, 1080, 2160} {
+		args := buildFFmpegArgs(EncoderParams{
+			Width: 1920, Height: 1080,
+			RateNum: 50, RateDen: 1,
+			Preset: "veryfast", Profile: "high",
+			OutHeight: out,
+		})
+		require.NotContains(t, args, "-vf", "OutHeight %d", out)
+	}
+}
+
+func TestGrainStepKeepsTheRateAtOrBelowTheMax(t *testing.T) {
+	for _, ca := range []struct {
+		num, den int64
+		max      uint
+		want     int64
+	}{
+		{50, 1, 0, 1},        // no maximum: every grain
+		{50, 1, 25, 2},       // 50 -> 25
+		{50, 1, 30, 2},       // 50 -> 25, never above 30
+		{25, 1, 25, 1},       // already at the maximum
+		{60000, 1001, 30, 2}, // 59.94 -> 29.97
+		{30000, 1001, 25, 2}, // 29.97 -> 14.99, never above 25
+		{50, 1, 60, 1},       // maximum above the flow's rate
+	} {
+		got := grainStep(mxl.Rational{Num: ca.num, Den: ca.den}, ca.max)
+		require.Equal(t, ca.want, got, "%d/%d max %d", ca.num, ca.den, ca.max)
 	}
 }

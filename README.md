@@ -20,11 +20,15 @@ binary.
 
 Path options the fork adds, accepted by both the configuration file and the
 `/v3/config/paths/*` HTTP API: `mxlFFmpegPath`, `mxlCodec`, `mxlH264Preset`,
-`mxlH264Profile`, `mxlH264Bitrate`, `mxlH264IDRPeriod`.
+`mxlH264Profile`, `mxlH264Bitrate`, `mxlH264IDRPeriod`, `mxlH264MaxHeight`,
+`mxlH264MaxRate`.
 
-Geometry and frame rate come from the flow, never from configuration. The
-encoder is given the rate as the fraction the flow declares, so a 60000/1001
-flow is encoded at 59.94 rather than at a rounded 60. `mxlH264IDRPeriod`
+Geometry and frame rate come from the flow. The encoder is given the rate as
+the fraction the flow declares, so a 60000/1001 flow is encoded at 59.94 rather
+than at a rounded 60. `mxlH264MaxHeight` scales a taller picture down to that
+height, keeping its aspect ratio; `mxlH264MaxRate` encodes every n-th grain so
+the rate stays at or below that many frames a second, and PTS keeps following
+the grain index. Both default to 0, the flow's own height and rate. `mxlH264IDRPeriod`
 counts frames and defaults to half a second of them at that rate; a GOP the
 length of `hlsSegmentDuration` sits on the HLS muxer's cut comparison, which
 makes segments alternate between one and two of them.

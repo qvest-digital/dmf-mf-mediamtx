@@ -23,6 +23,9 @@ type EncoderParams struct {
 	Profile   string // "baseline" | "main" | "high"
 	Bitrate   uint32 // target bitrate in bits/sec; 0 means use ffmpeg/x264 default
 	IDRPeriod uint32 // distance between IDR frames in frames; 0 derives it from the rate
+	// OutHeight scales the picture to this height, the width following the
+	// aspect ratio; 0 or a height not below the input's keeps the input's.
+	OutHeight uint32
 
 	// OnData is invoked for every encoded access unit, in input order, from
 	// the encoder's reader goroutine. The callback may block (write to a
@@ -137,6 +140,12 @@ func buildFFmpegArgs(p EncoderParams) []string {
 		"-s", fmt.Sprintf("%dx%d", p.Width, p.Height),
 		"-r", fmt.Sprintf("%d/%d", p.RateNum, p.RateDen),
 		"-i", "pipe:0",
+	}
+	if p.OutHeight > 0 && p.OutHeight < p.Height {
+		// -2 keeps the width even, which 4:2:0 needs.
+		args = append(args, "-vf", fmt.Sprintf("scale=-2:%d", p.OutHeight))
+	}
+	args = append(args,
 		// Encoder.
 		"-c:v", "libx264",
 		"-preset", p.Preset,
@@ -152,7 +161,7 @@ func buildFFmpegArgs(p EncoderParams) []string {
 		"-x264-params", "sliced-threads=0:scenecut=0",
 		// Repeat SPS/PPS at every IDR so late-joining RTSP readers can decode.
 		"-bsf:v", "dump_extra=freq=keyframe",
-	}
+	)
 
 	if p.Bitrate > 0 {
 		args = append(args,
