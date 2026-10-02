@@ -347,6 +347,8 @@ type Path struct {
 	MXLH264Profile   string `json:"mxlH264Profile"`
 	MXLH264Bitrate   uint   `json:"mxlH264Bitrate"`
 	MXLH264IDRPeriod uint   `json:"mxlH264IDRPeriod"`
+	MXLH264MaxHeight uint   `json:"mxlH264MaxHeight"`
+	MXLH264MaxRate   uint   `json:"mxlH264MaxRate"`
 	MXLOpusBitrate   uint   `json:"mxlOpusBitrate"`
 	MXLAudioChannels string `json:"mxlAudioChannels"`
 
@@ -432,6 +434,9 @@ func (pconf *Path) setDefaults() {
 	pconf.MXLH264Profile = "high"
 	pconf.MXLH264Bitrate = 5000000
 	pconf.MXLH264IDRPeriod = 0
+	// Zero keeps the flow's own height and rate.
+	pconf.MXLH264MaxHeight = 0
+	pconf.MXLH264MaxRate = 0
 	pconf.MXLOpusBitrate = 128000
 	// Empty means the flow's first pair. RTP Opus carries two channels at
 	// most, so a wider flow is heard a pair at a time whatever is set here.
@@ -832,6 +837,11 @@ func (pconf *Path) validate(
 		case "baseline", "main", "high":
 		default:
 			return fmt.Errorf("invalid 'mxlH264Profile' value")
+		}
+
+		// 4:2:0 halves the chroma height, so an odd one has no exact picture.
+		if pconf.MXLH264MaxHeight%2 != 0 {
+			return fmt.Errorf("invalid 'mxlH264MaxHeight' value (must be even)")
 		}
 
 		if _, err := ParseAudioChannels(pconf.MXLAudioChannels); err != nil {

@@ -209,6 +209,11 @@ func (s *Source) runVideo(
 	s.Log(logger.Info, "flow geometry %dx%d @ %d/%d (%.3ffps), stride=%d, ringSize=%d",
 		width, height, rate.Num, rate.Den, rate.Float64(), srcStride, info.Config.Discrete.GrainCount)
 
+	// Every step-th grain is encoded. The encoder is told the rate it is
+	// given; PTS keeps coming from the grain index at the flow's own rate.
+	step := grainStep(rate, params.Conf.MXLH264MaxRate)
+	encodeRate := mxl.Rational{Num: rate.Num, Den: rate.Den * step}
+
 	unpacker, err := NewV210Unpacker(width, height)
 	if err != nil {
 		return fmt.Errorf("v210 unpacker: %w", err)
@@ -290,7 +295,7 @@ func (s *Source) runVideo(
 		published = true
 	}
 
-	enc, err := NewH264Encoder(encoderParamsFromConf(params.Conf, width, height, rate, onData))
+	enc, err := NewH264Encoder(encoderParamsFromConf(params.Conf, width, height, encodeRate, onData))
 	if err != nil {
 		return fmt.Errorf("h264 encoder: %w", err)
 	}
@@ -331,6 +336,10 @@ func (s *Source) runVideo(
 		return fmt.Errorf("initial sync: %w", err)
 	}
 	var lastIdx uint64
+	// encoded and nextEncode track the last grain handed to the encoder, so
+	// that with a step above one the grains between are never unpacked.
+	var encoded bool
+	var nextEncode uint64
 	// Self-heal watchdog state: started flips true on the first decoded grain;
 	// lastProgress is bumped whenever the head advances. See staleTimeout.
 	var started bool
@@ -456,6 +465,13 @@ func (s *Source) runVideo(
 		started = true
 		lastProgress = time.Now()
 
+		// Below the next grain due for encoding: read that one instead,
+		// before any of this grain is unpacked.
+		if step > 1 && encoded && grain.Index < nextEncode {
+			idx = nextEncode
+			continue
+		}
+
 		err = unpacker.Unpack(grain.Payload, srcStride, yPlane, cbPlane, crPlane)
 		if err != nil {
 			s.Log(logger.Error, "v210 unpack: %v", err)
@@ -478,6 +494,7 @@ func (s *Source) runVideo(
 		if err != nil {
 			return fmt.Errorf("encoder write: %w", err)
 		}
+		encoded, nextEncode = true, grain.Index+uint64(step)
 
 		// Always pick the freshest available grain next, dropping any
 		// frames produced by the writer while we were busy encoding.
@@ -486,6 +503,20 @@ func (s *Source) runVideo(
 			return fmt.Errorf("resync: %w", err)
 		}
 	}
+}
+
+// grainStep is how many grains apart the encoded ones are, so that the rate
+// they make is at most maxRate frames a second. 0 means the flow's own rate.
+func grainStep(rate mxl.Rational, maxRate uint) int64 {
+	if maxRate == 0 || rate.Den <= 0 {
+		return 1
+	}
+	limit := int64(maxRate) * rate.Den
+	step := (rate.Num + limit - 1) / limit
+	if step < 1 {
+		return 1
+	}
+	return step
 }
 
 // encoderParamsFromConf reads the mxlH264* fields off the path config and
@@ -507,6 +538,7 @@ func encoderParamsFromConf(
 		Profile:    cnf.MXLH264Profile,
 		Bitrate:    uint32(cnf.MXLH264Bitrate),
 		IDRPeriod:  uint32(cnf.MXLH264IDRPeriod),
+		OutHeight:  uint32(cnf.MXLH264MaxHeight),
 		OnData:     onData,
 	}
 }
