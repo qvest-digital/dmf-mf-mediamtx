@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.11](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.10...mxl-v1.0.0-rc.11) (2026-10-02)
+
+
+### Features
+
+* **mxl source:** cap the encoded height and rate of a path ([#40](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/40)) ([9a03f17](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/9a03f174932c4b26391ddb67a07ad42507e7c11c))
+
 ## [1.0.0-rc.10](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.9...mxl-v1.0.0-rc.10) (2026-09-07)
 
 
