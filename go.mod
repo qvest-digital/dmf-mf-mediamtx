@@ -40,7 +40,7 @@ require (
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/quic-go/quic-go v0.61.0
 	github.com/quic-go/webtransport-go v0.12.0
-	github.com/qvest-digital/go-mxl v1.0.0-rc.9
+	github.com/qvest-digital/go-mxl v1.1.0-rc.7
 	github.com/stretchr/testify v1.12.1
 	github.com/wlynxg/anet v0.0.5
 	golang.org/x/crypto v0.55.0
