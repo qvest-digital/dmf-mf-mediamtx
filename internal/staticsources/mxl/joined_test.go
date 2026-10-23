@@ -10,23 +10,23 @@ import (
 )
 
 func TestParseMXLURLJoined(t *testing.T) {
-	u, err := parseMXLURL("mxl:///run/mxl/domain/d4d00000-0000-0000-0000-000000000001" +
+	u, err := parseMXLURL("mxl:///run/mxl/domain/d4d00000-0000-4000-8000-000000000001" +
 		"?audio=aea7b9e9-1e5b-4333-9ac4-8689053a77de")
 	require.NoError(t, err)
 	require.Equal(t, "/run/mxl/domain", u.domain)
-	require.Equal(t, "d4d00000-0000-0000-0000-000000000001", u.flowID)
+	require.Equal(t, "d4d00000-0000-4000-8000-000000000001", u.flowID)
 	require.Equal(t, "aea7b9e9-1e5b-4333-9ac4-8689053a77de", u.audioFlowID)
 }
 
 func TestParseMXLURLSoloCarriesNoAudio(t *testing.T) {
-	u, err := parseMXLURL("mxl:///run/mxl/domain/d4d00000-0000-0000-0000-000000000001")
+	u, err := parseMXLURL("mxl:///run/mxl/domain/d4d00000-0000-4000-8000-000000000001")
 	require.NoError(t, err)
-	require.Equal(t, "d4d00000-0000-0000-0000-000000000001", u.flowID)
+	require.Equal(t, "d4d00000-0000-4000-8000-000000000001", u.flowID)
 	require.Empty(t, u.audioFlowID)
 }
 
 func TestParseMXLURLRejects(t *testing.T) {
-	const video = "mxl:///run/mxl/domain/d4d00000-0000-0000-0000-000000000001"
+	const video = "mxl:///run/mxl/domain/d4d00000-0000-4000-8000-000000000001"
 
 	for _, ca := range []struct {
 		name string
@@ -37,13 +37,13 @@ func TestParseMXLURLRejects(t *testing.T) {
 		// being at fault.
 		{"a misspelled key", video + "?audi=aea7b9e9-1e5b-4333-9ac4-8689053a77de"},
 		{"an unknown key alongside a good one", video +
-			"?audio=aea7b9e9-1e5b-4333-9ac4-8689053a77de&anc=c3000000-0000-0000-0000-000000000001"},
+			"?audio=aea7b9e9-1e5b-4333-9ac4-8689053a77de&anc=c3000000-0000-4000-8000-000000000001"},
 		{"an empty audio flow", video + "?audio="},
 		{"two audio flows", video +
 			"?audio=aea7b9e9-1e5b-4333-9ac4-8689053a77de&audio=ce343f8f-d204-4e3c-b843-5222623a292b"},
 		// Joining a flow to itself would open two readers on one flow and
 		// publish it as both tracks.
-		{"a flow joined to itself", video + "?audio=d4d00000-0000-0000-0000-000000000001"},
+		{"a flow joined to itself", video + "?audio=d4d00000-0000-4000-8000-000000000001"},
 		{"the wrong scheme", "rtsp://host/path"},
 		{"a host", "mxl://host/domain/flow"},
 		{"no domain", "mxl:///flow"},
