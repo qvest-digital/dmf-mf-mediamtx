@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"os/exec"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,15 @@ func TestBuildOpusArgs(t *testing.T) {
 		}
 	}
 	require.Equal(t, []string{"44100", "48000"}, rates)
+
+	// One Opus frame per Ogg page, in microseconds, and no probing of an
+	// input whose format is given. See TestOpusEncoderDeliversPacketsAsEncoded
+	// for what either default costs.
+	require.Equal(t, "20000", argValue(t, args, "-page_duration"))
+	require.Equal(t, "32", argValue(t, args, "-probesize"))
+	require.Equal(t, "0", argValue(t, args, "-analyzeduration"))
+	require.Less(t, slices.Index(args, "-probesize"), slices.Index(args, "-i"),
+		"-probesize is an input option and has to precede -i")
 }
 
 func TestNewOpusEncoderRejectsUnusableParams(t *testing.T) {
@@ -96,6 +106,50 @@ func TestOpusEncoderRoundTrip(t *testing.T) {
 	for i, p := range packets {
 		require.NotEmpty(t, p, "packet %d", i)
 	}
+}
+
+// Packets have to come back while the input is still arriving. Two defaults
+// stood in the way, and either alone fails this: ffmpeg probed the pipe for
+// about four seconds before encoding anything, and the Ogg muxer's page spans
+// a second. A source paced in real time got nothing back for seconds and then
+// all of it at once, which a WebRTC receiver buffers as audio delay and holds
+// the picture back to match.
+func TestOpusEncoderDeliversPacketsAsEncoded(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+
+	var mu sync.Mutex
+	var packets int
+	enc, err := NewOpusEncoder(AudioEncoderParams{
+		SampleRate:   48000,
+		ChannelCount: 2,
+		OnPacket: func([]byte) {
+			mu.Lock()
+			packets++
+			mu.Unlock()
+		},
+	})
+	require.NoError(t, err)
+	defer enc.Close()
+
+	// 800 ms of silence in 20 ms blocks, written at the rate a live flow
+	// produces it.
+	const framesPerBlock = 48000 / 50
+	buf := make([]byte, framesPerBlock*2*4)
+	start := time.Now()
+	for i := range 40 {
+		require.NoError(t, enc.Encode(buf))
+		time.Sleep(time.Until(start.Add(time.Duration(i+1) * 20 * time.Millisecond)))
+	}
+
+	// ffmpeg reads raw PCM a few frames at a time and needs a moment to
+	// start, so not every block is back yet. A page held for a second has
+	// returned none of them.
+	mu.Lock()
+	defer mu.Unlock()
+	require.GreaterOrEqual(t, packets, 15,
+		"packets returned while 40 frames of input were being written")
 }
 
 func TestOpusEncoderCloseIsIdempotent(t *testing.T) {

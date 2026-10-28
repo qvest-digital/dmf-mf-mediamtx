@@ -79,6 +79,11 @@ func buildOpusArgs(p AudioEncoderParams) []string {
 	return []string{
 		"-hide_banner", "-loglevel", "warning",
 		// Input: interleaved float samples from our pipe, at the flow's rate.
+		// The format is given, so there is nothing to probe for, but ffmpeg
+		// probes anyway: it reads about four seconds of the pipe before it
+		// encodes anything, and then hands those four seconds over at once.
+		"-probesize", "32",
+		"-analyzeduration", "0",
 		"-f", "f32le",
 		"-ar", strconv.FormatUint(uint64(p.SampleRate), 10),
 		"-ac", strconv.FormatUint(uint64(p.ChannelCount), 10),
@@ -94,6 +99,14 @@ func buildOpusArgs(p AudioEncoderParams) []string {
 		"-ar", strconv.FormatUint(opusClockRate, 10),
 		// No bare-packet muxer exists; oggOpusExtractor undoes this framing.
 		"-f", "opus",
+		// The Ogg muxer holds packets until a page spans page_duration, one
+		// second by default, and -flush_packets only flushes what it has
+		// already paged. Left at the default every packet reaches the reader
+		// up to a second late and a second's worth at once, and a WebRTC
+		// receiver answers that by buffering audio by as much and holding the
+		// picture back to match. One frame per page hands each packet over as
+		// soon as it is encoded.
+		"-page_duration", strconv.FormatInt(opusFrameSamples*1000000/opusClockRate, 10),
 		"-flush_packets", "1",
 		"pipe:1",
 	}
