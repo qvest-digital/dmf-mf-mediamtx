@@ -87,7 +87,9 @@ jobs:
             -e LD_LIBRARY_PATH=/opt/libmxl/lib \
             -e GOFLAGS=-buildvcs=false \
             --entrypoint sh "ghcr.io/qvest-digital/go-mxl-builder:${tag}" -c '
+              set -e
               apt-get update -qq
               apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null
+              command -v ffmpeg >/dev/null
               ffmpeg -version | head -1
               go test -count=1 -v -run "TestBuildOpusArgs|TestOpusEncoder" ./internal/staticsources/mxl/'
