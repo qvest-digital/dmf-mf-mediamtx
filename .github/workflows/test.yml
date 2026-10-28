@@ -68,3 +68,26 @@ jobs:
       - uses: ./.github/actions/libmxl
 
       - run: make test-e2e-nodocker
+
+  # The MXL source encodes through an ffmpeg sidecar, and the tests that start
+  # it skip where there is none. They run here against the ffmpeg the released
+  # image ships with: Debian's, in the image libmxl comes from, whose tag is
+  # read from Dockerfile.mxl so the two cannot drift apart.
+  test_mxl_ffmpeg:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: |
+          set -euo pipefail
+          tag=$(sed -n 's/^ARG GO_MXL_TAG=//p' Dockerfile.mxl | head -1)
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e PKG_CONFIG_PATH=/opt/libmxl/lib/pkgconfig \
+            -e LD_LIBRARY_PATH=/opt/libmxl/lib \
+            -e GOFLAGS=-buildvcs=false \
+            --entrypoint sh "ghcr.io/qvest-digital/go-mxl-builder:${tag}" -c '
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null
+              ffmpeg -version | head -1
+              go test -count=1 -v -run "TestBuildOpusArgs|TestOpusEncoder" ./internal/staticsources/mxl/'

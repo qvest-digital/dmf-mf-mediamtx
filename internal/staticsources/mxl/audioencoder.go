@@ -79,6 +79,11 @@ func buildOpusArgs(p AudioEncoderParams) []string {
 	return []string{
 		"-hide_banner", "-loglevel", "warning",
 		// Input: interleaved float samples from our pipe, at the flow's rate.
+		// The format is given, so there is nothing to probe for, but ffmpeg
+		// probes anyway: it reads about four seconds of the pipe before it
+		// encodes anything, and then hands those four seconds over at once.
+		"-probesize", "32",
+		"-analyzeduration", "0",
 		"-f", "f32le",
 		"-ar", strconv.FormatUint(uint64(p.SampleRate), 10),
 		"-ac", strconv.FormatUint(uint64(p.ChannelCount), 10),
