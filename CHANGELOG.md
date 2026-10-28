@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.13](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.12...mxl-v1.0.0-rc.13) (2026-10-28)
+
+
+### Bug Fixes
+
+* **mxl source:** hand Opus packets over as they are encoded ([#45](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/45)) ([cd2b058](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/cd2b0586a1b3c8c3f9a03a74c6e8dd92e773fdec))
+
 ## [1.0.0-rc.12](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.11...mxl-v1.0.0-rc.12) (2026-10-22)
 
 
