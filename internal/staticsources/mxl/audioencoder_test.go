@@ -28,6 +28,10 @@ func TestBuildOpusArgs(t *testing.T) {
 		}
 	}
 	require.Equal(t, []string{"44100", "48000"}, rates)
+
+	// One Opus frame per Ogg page, in microseconds. See
+	// TestOpusEncoderDeliversPacketsAsEncoded for what the default costs.
+	require.Equal(t, "20000", argValue(t, args, "-page_duration"))
 }
 
 func TestNewOpusEncoderRejectsUnusableParams(t *testing.T) {
@@ -96,6 +100,49 @@ func TestOpusEncoderRoundTrip(t *testing.T) {
 	for i, p := range packets {
 		require.NotEmpty(t, p, "packet %d", i)
 	}
+}
+
+// Packets have to come back while the input is still arriving, not when the
+// muxer next completes a page. The Ogg muxer's default page spans a second, so
+// a source paced in real time got nothing for its first second of audio and
+// then a second of it at once, which a WebRTC receiver buffers as a second of
+// audio delay and holds the picture back to match.
+func TestOpusEncoderDeliversPacketsAsEncoded(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+
+	var mu sync.Mutex
+	var packets int
+	enc, err := NewOpusEncoder(AudioEncoderParams{
+		SampleRate:   48000,
+		ChannelCount: 2,
+		OnPacket: func([]byte) {
+			mu.Lock()
+			packets++
+			mu.Unlock()
+		},
+	})
+	require.NoError(t, err)
+	defer enc.Close()
+
+	// 800 ms of silence in 20 ms blocks, written at the rate a live flow
+	// produces it.
+	const framesPerBlock = 48000 / 50
+	buf := make([]byte, framesPerBlock*2*4)
+	start := time.Now()
+	for i := range 40 {
+		require.NoError(t, enc.Encode(buf))
+		time.Sleep(time.Until(start.Add(time.Duration(i+1) * 20 * time.Millisecond)))
+	}
+
+	// ffmpeg reads raw PCM a few frames at a time and needs a moment to
+	// start, so not every block is back yet. A page held for a second has
+	// returned none of them.
+	mu.Lock()
+	defer mu.Unlock()
+	require.GreaterOrEqual(t, packets, 15,
+		"packets returned while 40 frames of input were being written")
 }
 
 func TestOpusEncoderCloseIsIdempotent(t *testing.T) {

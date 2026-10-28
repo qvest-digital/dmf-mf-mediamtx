@@ -94,6 +94,14 @@ func buildOpusArgs(p AudioEncoderParams) []string {
 		"-ar", strconv.FormatUint(opusClockRate, 10),
 		// No bare-packet muxer exists; oggOpusExtractor undoes this framing.
 		"-f", "opus",
+		// The Ogg muxer holds packets until a page spans page_duration, one
+		// second by default, and -flush_packets only flushes what it has
+		// already paged. Left at the default every packet reaches the reader
+		// up to a second late and a second's worth at once, and a WebRTC
+		// receiver answers that by buffering audio by as much and holding the
+		// picture back to match. One frame per page hands each packet over as
+		// soon as it is encoded.
+		"-page_duration", strconv.FormatInt(opusFrameSamples*1000000/opusClockRate, 10),
 		"-flush_packets", "1",
 		"pipe:1",
 	}
