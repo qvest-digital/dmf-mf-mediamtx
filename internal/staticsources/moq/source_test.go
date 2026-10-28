@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -396,6 +397,12 @@ func (s *testMoqServer) writeSubGroup(c testServerConn, trackName string, trackA
 }
 
 func isExpectedSessionShutdownError(err error) bool {
+	// a WebTransport session closed by the peer with code 0 carries an empty message.
+	var sessionErr *webtransport.SessionError
+	if errors.As(err, &sessionErr) && sessionErr.Remote && sessionErr.ErrorCode == 0 {
+		return true
+	}
+
 	errstr := err.Error()
 	return strings.Contains(errstr, "context canceled") ||
 		strings.Contains(errstr, "Application error 0x0") ||
