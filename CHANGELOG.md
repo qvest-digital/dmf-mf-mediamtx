@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.14](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.13...mxl-v1.0.0-rc.14) (2026-10-31)
+
+
+### Features
+
+* **mxl source:** report what the source reads over OTLP ([#50](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/50)) ([69c3d4b](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/69c3d4b09cc82e23413cf8a0b3ae10d45594bd3d))
+
+
+### Continuous Integration
+
+* fail the ffmpeg encoder job when ffmpeg is missing ([#47](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/47)) ([86e99a6](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/86e99a63b006f2625b9aaccd405a397afc0e5e5c))
+
 ## [1.0.0-rc.13](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.12...mxl-v1.0.0-rc.13) (2026-10-28)
 
 
