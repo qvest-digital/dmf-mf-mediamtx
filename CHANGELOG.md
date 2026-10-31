@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.15](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.14...mxl-v1.0.0-rc.15) (2026-10-31)
+
+
+### Dependencies
+
+* move onto libmxl-monitoring 0.5.0 ([#51](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/51)) ([6d3635b](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/6d3635bfab114fe60fdb962ee4b1e60c40e27df5))
+
 ## [1.0.0-rc.14](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.13...mxl-v1.0.0-rc.14) (2026-10-31)
 
 
