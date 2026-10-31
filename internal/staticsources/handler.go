@@ -299,6 +299,11 @@ func (s *Handler) run() {
 				runCtxCancel()
 				<-runErr
 			}
+			// A source that keeps state across runs, such as the MXL source's
+			// monitoring handles, gives it up once nothing runs it again.
+			if c, ok := s.instance.(interface{ Close() }); ok {
+				c.Close()
+			}
 			return
 		}
 	}

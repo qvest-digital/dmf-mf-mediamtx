@@ -1,7 +1,8 @@
 name: Provide libmxl
 description: >-
-  Puts libmxl and pkg-config on the runner so the packages that bind libmxl
-  through cgo can be compiled, vetted and tested.
+  Puts libmxl, libmxl-monitoring, opentelemetry-cpp and pkg-config on the
+  runner, and the flags that link them in CGO_LDFLAGS, so the packages that
+  bind libmxl through cgo can be compiled, vetted and tested.
 
 runs:
   using: composite
@@ -33,3 +34,25 @@ runs:
         pkg-config --exists libmxl && echo "libmxl $(pkg-config --modversion libmxl)"
       env:
         PKG_CONFIG_PATH: /opt/libmxl/lib/pkgconfig
+
+    - uses: docker/setup-buildx-action@v3
+
+    # The same stage the image's builder links from, built from the
+    # libmxl-monitoring release go.mod requires. opentelemetry-cpp takes
+    # minutes to build, so its layer comes from the image's build cache.
+    - uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: Dockerfile.mxl
+        target: monitoring-libs
+        outputs: type=local,dest=/tmp/monitoring-libs
+        cache-from: |
+          type=registry,ref=ghcr.io/qvest-digital/dmf-mf-mediamtx:buildcache
+          type=gha,scope=monitoring-libs
+        cache-to: type=gha,scope=monitoring-libs,mode=max
+
+    - shell: bash
+      run: |
+        set -euo pipefail
+        sudo cp -r /tmp/monitoring-libs/opt/. /opt/
+        echo "CGO_LDFLAGS=$(scripts/mxl-ldflags.sh)" >> "$GITHUB_ENV"

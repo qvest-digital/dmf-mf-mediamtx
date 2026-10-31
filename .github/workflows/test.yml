@@ -79,10 +79,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # For libmxl-monitoring and opentelemetry-cpp, which the package links
+      # and the image carries only in its build stages.
+      - uses: ./.github/actions/libmxl
+
       - run: |
           set -euo pipefail
           tag=$(sed -n 's/^ARG GO_MXL_TAG=//p' Dockerfile.mxl | head -1)
           docker run --rm -v "$PWD:/src" -w /src \
+            -v /opt/mxl-monitoring:/opt/mxl-monitoring:ro \
+            -v /opt/otel:/opt/otel:ro \
+            -e CGO_LDFLAGS \
             -e PKG_CONFIG_PATH=/opt/libmxl/lib/pkgconfig \
             -e LD_LIBRARY_PATH=/opt/libmxl/lib \
             -e GOFLAGS=-buildvcs=false \

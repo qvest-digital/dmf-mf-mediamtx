@@ -16,6 +16,7 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
+	mxlmonitoring "github.com/marquies/libmxl-monitoring/go"
 	"github.com/qvest-digital/go-mxl/mxl"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -69,6 +70,8 @@ type Source struct {
 	RTPMaxPayloadSize int
 	LogLevel          conf.LogLevel
 	Parent            parent
+
+	flows flowHandles
 }
 
 // Log implements logger.Writer.
@@ -84,6 +87,11 @@ func (*Source) APISourceDescribe() *defs.APIPathSource {
 	}
 }
 
+// Close implements the handler's hook for a source that will not run again.
+func (s *Source) Close() {
+	s.flows.release()
+}
+
 // Run implements StaticSource.
 func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	u, err := parseMXLURL(params.ResolvedSource)
@@ -93,13 +101,25 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	domain, flowID := u.domain, u.flowID
 	s.Log(logger.Info, "opening MXL domain %q flow %s", domain, flowID)
 
+	s.flows.m = processMonitoring(s)
+	flow := s.flows.get(s, flowID)
+	var audioFlow *mxlmonitoring.Flow
+	if u.audioFlowID != "" {
+		audioFlow = s.flows.get(s, u.audioFlowID)
+	}
+
 	inst, err := mxl.NewInstance(domain, "")
 	if err != nil {
+		// go-mxl carries no status for an instance libmxl did not create;
+		// the domain is what could not be opened.
+		flow.RecordAccessAs(mxlmonitoring.AccessDomainUnavailable, err)
+		audioFlow.RecordAccessAs(mxlmonitoring.AccessDomainUnavailable, err)
 		return fmt.Errorf("open MXL instance: %w", err)
 	}
 	defer func() { _ = inst.Close() }()
 
 	reader, err := inst.NewReader(flowID)
+	flow.RecordAccess(err)
 	if err != nil {
 		return fmt.Errorf("open MXL reader: %w", err)
 	}
@@ -116,7 +136,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			return fmt.Errorf("flow %s is audio, so it cannot also carry the audio of %s",
 				flowID, u.audioFlowID)
 		}
-		return s.runAudio(params, reader, info, flowID, audioTrack{})
+		return s.runAudio(params, reader, info, flowID, flow, audioTrack{})
 	}
 	if info.Config.Common.Format != mxl.FormatVideo {
 		return fmt.Errorf("flow %s is neither video nor audio (format=%s)",
@@ -124,9 +144,9 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	}
 
 	if u.audioFlowID != "" {
-		return s.runJoined(params, inst, reader, info, u)
+		return s.runJoined(params, inst, reader, info, u, flow, audioFlow)
 	}
-	return s.runVideo(params, inst, reader, info, flowID, videoTrack{})
+	return s.runVideo(params, inst, reader, info, flowID, flow, videoTrack{})
 }
 
 // videoMedia describes the H.264 track a video flow is published as.
@@ -185,24 +205,30 @@ func (s *Source) runVideo(
 	reader *mxl.Reader,
 	info mxl.FlowInfo,
 	flowID string,
+	flow *mxlmonitoring.Flow,
 	track videoTrack,
 ) error {
 	defJSON, err := inst.FlowDef(flowID)
 	if err != nil {
+		flow.RecordAccess(err)
 		return fmt.Errorf("read flow def: %w", err)
 	}
 	var def flowDef
 	err = json.Unmarshal([]byte(defJSON), &def)
 	if err != nil {
+		flow.RecordReadContent(mxlmonitoring.ContentWrongFormat, 0, 1)
 		return fmt.Errorf("parse flow def: %w", err)
 	}
+	recordOpen(flow, info, def.MediaType, period(info.Config.Common.GrainRate, 1))
 	if def.MediaType != "video/v210" {
+		flow.RecordReadContent(mxlmonitoring.ContentWrongFormat, 0, 1)
 		return fmt.Errorf("unsupported media_type %q (only video/v210 in v1)", def.MediaType)
 	}
 	width, height := def.FrameWidth, def.FrameHeight
 	srcStride := int(info.Config.Discrete.SliceSizes[0])
 	rate := info.Config.Common.GrainRate
 	if rate.Num <= 0 || rate.Den <= 0 {
+		flow.RecordReadContent(mxlmonitoring.ContentWrongRate, 0, 1)
 		return fmt.Errorf("flow %s declares grain rate %d/%d", flowID, rate.Num, rate.Den)
 	}
 
@@ -216,6 +242,7 @@ func (s *Source) runVideo(
 
 	unpacker, err := NewV210Unpacker(width, height)
 	if err != nil {
+		flow.RecordReadContent(mxlmonitoring.ContentWrongResolution, 0, 1)
 		return fmt.Errorf("v210 unpacker: %w", err)
 	}
 
@@ -320,11 +347,13 @@ func (s *Source) runVideo(
 	// The margin keeps us from racing the writer at the leading edge of
 	// the buffer; with a 5-grain ring this leaves ~3 grains of headroom.
 	const safetyMargin uint64 = 1
+	heads := commits{f: flow}
 	freshestIndex := func() (uint64, error) {
 		rt, rtErr := reader.Runtime()
 		if rtErr != nil {
 			return 0, rtErr
 		}
+		heads.observe(rt)
 		if rt.HeadIndex > safetyMargin {
 			return rt.HeadIndex - safetyMargin, nil
 		}
@@ -347,6 +376,9 @@ func (s *Source) runVideo(
 	// Diagnostic counters, reported when a watchdog fires so the log tells
 	// WHICH loop path starved the reader instead of a bare "no grain".
 	var nTimeout, nLate, nEarly, nInvalid, nSameIdx uint64
+	// The invalid-grain path re-reads one grain many times while it backs
+	// off; its content is one grain's.
+	var invalidIdx uint64
 	diag := func() string {
 		rt, rerr := reader.Runtime()
 		head := uint64(0)
@@ -391,27 +423,46 @@ func (s *Source) runVideo(
 			// fall through
 		case errors.Is(err, mxl.ErrTimeout):
 			nTimeout++
+			flow.RecordRead(err, idx, 1)
 			if idx, err = freshestIndex(); err != nil {
 				return fmt.Errorf("resync after timeout: %w", err)
 			}
 			continue
 		case errors.Is(err, mxl.ErrOutOfRangeLate):
 			nLate++
+			flow.RecordRead(err, idx, 1)
 			// Encoder + ring window can't keep up at all; jump to head.
+			lateIdx := idx
 			if idx, err = freshestIndex(); err != nil {
 				return fmt.Errorf("resync after fall-behind: %w", err)
+			}
+			if idx > lateIdx {
+				flow.RecordSkipped(idx - lateIdx)
 			}
 			continue
 		case errors.Is(err, mxl.ErrOutOfRangeEarly):
 			nEarly++
+			flow.RecordRead(err, idx, 1)
 			time.Sleep(2 * time.Millisecond)
 			continue
 		default:
+			flow.RecordRead(err, idx, 1)
 			return fmt.Errorf("get grain: %w", err)
 		}
 
 		if grain.Invalid() || !grain.Complete() {
 			nInvalid++
+			switch {
+			case grain.Invalid():
+				if grain.Index != invalidIdx {
+					invalidIdx = grain.Index
+					flow.RecordReadContent(mxlmonitoring.ContentInvalid, grain.Index, 1)
+				}
+			default:
+				// A grain still being written at the head: not there yet,
+				// which the library counts once it is overdue.
+				flow.RecordRead(mxl.ErrOutOfRangeEarly, grain.Index, 1)
+			}
 			// One-shot forensic scan: how far behind head do grains become
 			// valid? Tells whether safetyMargin is simply too small for
 			// same-node (mirror-less) consumption.
@@ -454,6 +505,10 @@ func (s *Source) runVideo(
 		// Skip if we re-pulled the same grain (writer hasn't advanced yet).
 		if grain.Index == lastIdx {
 			nSameIdx++
+			// The writer has not moved on: the next grain is what is
+			// missing, and counts once overdue, as a stall once the
+			// writer stays away.
+			flow.RecordRead(mxl.ErrOutOfRangeEarly, lastIdx+1, 1)
 			time.Sleep(time.Millisecond)
 			idx, err = freshestIndex()
 			if err != nil {
@@ -462,6 +517,7 @@ func (s *Source) runVideo(
 			continue
 		}
 		lastIdx = grain.Index
+		flow.RecordRead(nil, grain.Index, 1)
 		started = true
 		lastProgress = time.Now()
 

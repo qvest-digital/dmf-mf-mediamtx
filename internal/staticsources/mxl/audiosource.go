@@ -7,6 +7,7 @@ import (
 
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
+	mxlmonitoring "github.com/marquies/libmxl-monitoring/go"
 	"github.com/pion/rtp"
 	"github.com/qvest-digital/go-mxl/mxl"
 
@@ -219,9 +220,11 @@ func (s *Source) runAudio(
 	reader *mxl.Reader,
 	info mxl.FlowInfo,
 	flowID string,
+	flow *mxlmonitoring.Flow,
 	track audioTrack,
 ) error {
 	rate := info.Config.Common.GrainRate
+	recordOpen(flow, info, "", period(rate, audioReadSamples))
 	if rate.Num <= 0 || rate.Den <= 0 {
 		return fmt.Errorf("flow %s declares sample rate %d/%d", flowID, rate.Num, rate.Den)
 	}
@@ -310,6 +313,7 @@ func (s *Source) runAudio(
 	// ending at next+want is the range starting at next.
 	var next uint64
 	var started bool
+	heads := commits{f: flow}
 	lastProgress := time.Now()
 
 	// resync places the reader at the flow's leading edge and says what that
@@ -325,7 +329,11 @@ func (s *Source) runAudio(
 		if rerr != nil {
 			return rerr
 		}
+		lateNext := next
 		next = backOff(rt.HeadIndex, audioSafetyMargin)
+		if started && next > lateNext {
+			flow.RecordSkipped(next - lateNext)
+		}
 		if tl.epoch == 0 || next < tl.epoch {
 			// Nothing named an origin, or the flow has not reached the one it
 			// was given: a position before the origin has no timestamp on
@@ -368,9 +376,12 @@ func (s *Source) runAudio(
 		if rerr != nil {
 			return fmt.Errorf("read runtime: %w", rerr)
 		}
+		heads.observe(rt)
 
-		// The writer has not produced a full read yet.
+		// The writer has not produced a full read yet. Counted as the read
+		// that is missing, so a writer that stops is a stall.
 		if rt.HeadIndex < next+want+audioSafetyMargin {
+			flow.RecordRead(mxl.ErrOutOfRangeEarly, next+want, want)
 			time.Sleep(audioIdleSleep)
 			continue
 		}
@@ -380,6 +391,9 @@ func (s *Source) runAudio(
 		if rt.HeadIndex-next > uint64(info.Config.Continuous.BufferLength) {
 			s.Log(logger.Warn, "reader fell %d samples behind a %d-sample ring, resyncing",
 				rt.HeadIndex-next, info.Config.Continuous.BufferLength)
+			// The range is gone from the ring: what libmxl would have
+			// answered had it been read.
+			flow.RecordRead(mxl.ErrOutOfRangeLate, next+want, want)
 			if err = resync(); err != nil {
 				return fmt.Errorf("resync: %w", err)
 			}
@@ -387,6 +401,7 @@ func (s *Source) runAudio(
 		}
 
 		view, verr := reader.GetSamplesNonBlocking(next+want, int(want))
+		flow.RecordRead(verr, next+want, want)
 		switch {
 		case verr == nil:
 		case errors.Is(verr, mxl.ErrOutOfRangeEarly):
