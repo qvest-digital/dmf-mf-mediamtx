@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	mxlmonitoring "github.com/marquies/libmxl-monitoring/go"
 	"github.com/qvest-digital/go-mxl/mxl"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -149,8 +150,9 @@ func (s *Source) runJoined(
 	videoReader *mxl.Reader,
 	videoInfo mxl.FlowInfo,
 	u mxlURL,
+	videoFlow, audioFlow *mxlmonitoring.Flow,
 ) error {
-	audioReader, audioInfo, err := openAudio(inst, u.audioFlowID)
+	audioReader, audioInfo, err := openAudio(inst, u.audioFlowID, audioFlow)
 	if err != nil {
 		return err
 	}
@@ -223,14 +225,14 @@ func (s *Source) runJoined(
 	go func() {
 		defer close(audioDone)
 		s.superviseAudio(audioParams, inst, audioReader, audioInfo, u.audioFlowID,
-			epochNs, audioTrack{
+			audioFlow, epochNs, audioTrack{
 				pub:      pub,
 				media:    aMedia,
 				timeline: &audioTimeline{epoch: audioEpoch},
 			})
 	}()
 
-	err = s.runVideo(videoParams, inst, videoReader, videoInfo, u.flowID,
+	err = s.runVideo(videoParams, inst, videoReader, videoInfo, u.flowID, videoFlow,
 		videoTrack{pub: pub, media: vMedia, epochIndex: videoEpoch})
 
 	cancel()
@@ -266,6 +268,7 @@ func (s *Source) superviseAudio(
 	reader *mxl.Reader,
 	info mxl.FlowInfo,
 	flowID string,
+	flow *mxlmonitoring.Flow,
 	epochNs uint64,
 	track audioTrack,
 ) {
@@ -275,7 +278,7 @@ func (s *Source) superviseAudio(
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
 			var err error
-			reader, info, err = reopenAudio(inst, flowID, channels)
+			reader, info, err = reopenAudio(inst, flowID, flow, channels)
 			if err != nil {
 				s.Log(logger.Warn, "audio flow %s cannot be reopened (%v); the path "+
 					"keeps playing picture only", flowID, err)
@@ -297,7 +300,7 @@ func (s *Source) superviseAudio(
 		}
 
 		liveBefore, lastBefore := track.timeline.live, track.timeline.last
-		err := s.runAudio(params, reader, info, flowID, track)
+		err := s.runAudio(params, reader, info, flowID, flow, track)
 		_ = reader.Close()
 
 		if params.Context.Err() != nil {
@@ -324,8 +327,9 @@ func (s *Source) superviseAudio(
 }
 
 // openAudio opens a reader on the audio flow and checks it is one.
-func openAudio(inst *mxl.Instance, flowID string) (*mxl.Reader, mxl.FlowInfo, error) {
+func openAudio(inst *mxl.Instance, flowID string, flow *mxlmonitoring.Flow) (*mxl.Reader, mxl.FlowInfo, error) {
 	reader, err := inst.NewReader(flowID)
+	flow.RecordAccess(err)
 	if err != nil {
 		return nil, mxl.FlowInfo{}, fmt.Errorf("open audio reader: %w", err)
 	}
@@ -344,8 +348,10 @@ func openAudio(inst *mxl.Instance, flowID string) (*mxl.Reader, mxl.FlowInfo, er
 
 // reopenAudio opens a fresh reader and checks the flow still carries what the
 // path's audio media was built for.
-func reopenAudio(inst *mxl.Instance, flowID string, channels uint32) (*mxl.Reader, mxl.FlowInfo, error) {
-	reader, info, err := openAudio(inst, flowID)
+func reopenAudio(
+	inst *mxl.Instance, flowID string, flow *mxlmonitoring.Flow, channels uint32,
+) (*mxl.Reader, mxl.FlowInfo, error) {
+	reader, info, err := openAudio(inst, flowID, flow)
 	if err != nil {
 		return nil, mxl.FlowInfo{}, err
 	}

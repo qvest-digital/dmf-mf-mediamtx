@@ -27,6 +27,7 @@ require (
 	github.com/gookit/color v1.6.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
+	github.com/marquies/libmxl-monitoring v0.4.1-0.20261031103944-9a6db97a60bf
 	github.com/matthewhartstonge/argon2 v1.5.7
 	github.com/minio/selfupdate v0.6.0
 	github.com/pion/ice/v4 v4.4.1

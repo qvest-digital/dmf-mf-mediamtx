@@ -5,23 +5,52 @@
 # renovate: datasource=docker depName=ghcr.io/qvest-digital/go-mxl-builder
 ARG GO_MXL_TAG=1.1.0-rc.7
 
-# -------- 1. builder: cgo-link mediamtx against libmxl --------
+# -------- 1. monitoring: libmxl-monitoring and its OTLP exporter --------
+# Static libraries, linked into the binary, so libmxl.so stays the only
+# library the processes on a domain have to agree on.
+FROM ghcr.io/qvest-digital/go-mxl-builder:${GO_MXL_TAG} AS monitoring
+# go-mxl-builder carries neither opentelemetry-cpp nor picojson. Installed
+# from the image's vcpkg ports in a layer of its own, which only a new
+# GO_MXL_TAG rebuilds.
+RUN /root/vcpkg/vcpkg install "opentelemetry-cpp[otlp-http]" picojson --x-install-root=/opt/otel
+# Built from the source of the Go module go.mod requires, so the C libraries
+# and their Go binding cannot come from two different releases.
+COPY go.mod go.sum /src/
+WORKDIR /src
+RUN go mod download github.com/marquies/libmxl-monitoring \
+ && cmake -S "$(go list -m -f '{{.Dir}}' github.com/marquies/libmxl-monitoring)" -B /tmp/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DMXL_MONITORING_OTLP=ON \
+        -DMXL_MONITORING_BUILD_TESTS=OFF \
+        -DMXL_MONITORING_BUILD_EXAMPLES=OFF \
+        "-DCMAKE_PREFIX_PATH=/opt/libmxl;/opt/otel/x64-linux" \
+ && cmake --build /tmp/build \
+ && mkdir -p /opt/mxl-monitoring/lib \
+ && cp /tmp/build/*.a /opt/mxl-monitoring/lib/
+
+# What CI links the Go packages against, exported on its own by
+# .github/actions/libmxl.
+FROM scratch AS monitoring-libs
+COPY --from=monitoring /opt/mxl-monitoring/lib /opt/mxl-monitoring/lib
+COPY --from=monitoring /opt/otel/x64-linux/lib /opt/otel/x64-linux/lib
+
+# -------- 2. builder: cgo-link mediamtx against libmxl --------
 FROM ghcr.io/qvest-digital/go-mxl-builder:${GO_MXL_TAG} AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=monitoring-libs /opt /opt
 ENV PKG_CONFIG_PATH=/opt/libmxl/lib/pkgconfig
 ENV LD_LIBRARY_PATH=/opt/libmxl/lib
 ENV CGO_CFLAGS="-I/opt/libmxl/include"
-ENV CGO_LDFLAGS="-L/opt/libmxl/lib -lmxl"
 ENV CGO_ENABLED=1
 
 COPY . /src/mediamtx
 WORKDIR /src/mediamtx
 RUN go mod download && go generate ./... \
- && go build -o /out/mediamtx . \
+ && CGO_LDFLAGS="$(scripts/mxl-ldflags.sh)" go build -o /out/mediamtx . \
  && ldd /out/mediamtx | grep -E 'libmxl|not found' || true
 
-# -------- 2. runtime: swap the binary into the published image --------
+# -------- 3. runtime: swap the binary into the published image --------
 # The base supplies ffmpeg and the entrypoint. It is published by another
 # repository, which makes this image depend on a package it does not own.
 # Pinned by digest rather than :latest: that package stops receiving builds,
