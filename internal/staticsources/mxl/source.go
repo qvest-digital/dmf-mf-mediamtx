@@ -505,10 +505,11 @@ func (s *Source) runVideo(
 		// Skip if we re-pulled the same grain (writer hasn't advanced yet).
 		if grain.Index == lastIdx {
 			nSameIdx++
-			// The writer has not moved on: the next grain is what is
-			// missing, and counts once overdue, as a stall once the
-			// writer stays away.
-			flow.RecordRead(mxl.ErrOutOfRangeEarly, lastIdx+1, 1)
+			// The writer has not moved on. The reader stays safetyMargin
+			// behind the head, so the grains up to the head are there;
+			// the one after it is what is missing, and counts once
+			// overdue, as a stall once the writer stays away.
+			flow.RecordRead(mxl.ErrOutOfRangeEarly, lastIdx+safetyMargin+1, 1)
 			time.Sleep(time.Millisecond)
 			idx, err = freshestIndex()
 			if err != nil {
