@@ -37,7 +37,7 @@ func processMonitoring(l logger.Writer) *mxlmonitoring.Monitoring {
 		// Without an endpoint the exporter would push to localhost:4318 and
 		// fail at every interval on a pod that runs no collector.
 		if otlpConfigured() {
-			if _, err := otlp.Start(monitoring, "mediamtx"); err != nil {
+			if _, err = otlp.Start(monitoring, "mediamtx"); err != nil {
 				l.Log(logger.Warn, "MXL monitoring is not exported over OTLP: %v", err)
 			}
 		}
