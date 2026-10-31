@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.16](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.15...mxl-v1.0.0-rc.16) (2026-10-31)
+
+
+### Bug Fixes
+
+* **mxl source:** count the grain after the head as missing ([#53](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/53)) ([9e194e1](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/9e194e13c58370a3b2b2ecf825a8b7c5e0f6d0fb))
+
 ## [1.0.0-rc.15](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.14...mxl-v1.0.0-rc.15) (2026-10-31)
 
 
