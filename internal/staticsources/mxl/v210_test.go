@@ -12,7 +12,7 @@ import (
 // Cb Y Cr Y per pixel pair, three 10-bit components per little-endian word,
 // zero-padded to stride. Each 8-bit sample becomes the top 8 of 10 bits.
 func packV210Line(y, cb, cr []byte, stride int) []byte {
-	var comps []uint32
+	comps := make([]uint32, 0, 4*len(cb))
 	for p := range cb {
 		comps = append(comps, uint32(cb[p]), uint32(y[2*p]), uint32(cr[p]), uint32(y[2*p+1]))
 	}
@@ -30,9 +30,10 @@ func packV210Line(y, cb, cr []byte, stride int) []byte {
 }
 
 func TestV210Unpack(t *testing.T) {
-	// 1280 is not a multiple of the 6-pixel v210 group: its last group
-	// carries two pixels and padding, and every 720p flow depends on it.
-	for _, width := range []int{1280, 1920} {
+	// A width that is not a multiple of the 6-pixel v210 group ends in a
+	// group carrying two (1280, every 720p flow) or four (1282) pixels and
+	// padding; 2 and 4 are a tail with no complete group before it.
+	for _, width := range []int{2, 4, 1280, 1282, 1920} {
 		t.Run(strconv.Itoa(width), func(t *testing.T) {
 			const height = 2
 			stride := (width + 47) / 48 * 128
