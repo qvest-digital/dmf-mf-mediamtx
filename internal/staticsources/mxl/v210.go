@@ -10,8 +10,9 @@ import (
 // from 10 -> 8 by dropping the two LSBs of each component; vertical chroma is
 // downsampled by averaging adjacent line pairs.
 //
-// Width must be a multiple of 6 (v210's packing unit). Height must be even.
-// All HD broadcast resolutions in use today satisfy both.
+// Width and height must be even, as 4:2:0 output requires. A width that is
+// not a multiple of 6 (v210's packing unit, e.g. 1280) ends in a partly
+// filled group.
 type V210Unpacker struct {
 	width, height int
 	// Reusable per-line chroma buffers (top and bottom of each 2-line group).
@@ -25,11 +26,8 @@ func NewV210Unpacker(width, height int) (*V210Unpacker, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("v210: width and height must be positive")
 	}
-	if width%6 != 0 {
-		return nil, fmt.Errorf("v210: width must be divisible by 6, got %d", width)
-	}
-	if height%2 != 0 {
-		return nil, fmt.Errorf("v210: height must be even, got %d", height)
+	if width%2 != 0 || height%2 != 0 {
+		return nil, fmt.Errorf("v210: dimensions must be even, got %dx%d", width, height)
 	}
 	return &V210Unpacker{
 		width:  width,
@@ -46,7 +44,7 @@ func NewV210Unpacker(width, height int) (*V210Unpacker, error) {
 // The y plane must be width*height bytes; cb and cr must each be
 // (width/2)*(height/2) bytes.
 func (u *V210Unpacker) Unpack(src []byte, srcStride int, y, cb, cr []byte) error {
-	if srcStride < (u.width/6)*16 {
+	if srcStride < (u.width+5)/6*16 {
 		return fmt.Errorf("v210: srcStride %d too small for width %d", srcStride, u.width)
 	}
 	if len(src) < srcStride*u.height {
@@ -81,11 +79,19 @@ func (u *V210Unpacker) Unpack(src []byte, srcStride int, y, cb, cr []byte) error
 	return nil
 }
 
-// unpackV210Line decodes one row of v210 into Y, Cb, Cr lines (8-bit). Caller
-// ensures len(y) is a multiple of 6 and matches the width; cb/cr are half.
+// unpackV210Line decodes one row of v210 into Y, Cb, Cr lines (8-bit). len(y)
+// is the even width; cb/cr are half of it.
 func unpackV210Line(src, y, cb, cr []byte) {
 	width := len(y)
 	groups := width / 6
+	if rem := width % 6; rem != 0 {
+		var ty [6]byte
+		var tcb, tcr [3]byte
+		unpackV210Line(src[groups*16:], ty[:], tcb[:], tcr[:])
+		copy(y[groups*6:], ty[:rem])
+		copy(cb[groups*3:], tcb[:rem/2])
+		copy(cr[groups*3:], tcr[:rem/2])
+	}
 	for g := range groups {
 		off := g * 16
 		w0 := binary.LittleEndian.Uint32(src[off:])
