@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 )
 
 // EncoderParams configures the H264Encoder. Fields mirror the mxlH264* path
@@ -32,6 +33,10 @@ type EncoderParams struct {
 	// substream, log, etc.); blocking propagates back as natural
 	// backpressure on the encoder pipe.
 	OnData func(au [][]byte)
+
+	// OnFrameOut, when set, is called as the first slice of a picture
+	// starts arriving from ffmpeg.
+	OnFrameOut func(t time.Time)
 }
 
 // H264Encoder pipes planar YUV 4:2:0 frames into an ffmpeg subprocess and
@@ -121,7 +126,13 @@ func defaultIDRPeriod(rateNum, rateDen int64) uint32 {
 // Four threads hold three frames, 50 ms at 59.94. Against a noise-heavy
 // 1080p source on four cores they reach 136 fps where 48 threads on the same
 // four reach 152: the throughput the rest buy does not pay for the latency.
-const encoderThreads = 4
+
+func x264Params() string {
+	if encoderSliced {
+		return "sliced-threads=1:scenecut=0"
+	}
+	return "sliced-threads=0:scenecut=0"
+}
 
 // buildFFmpegArgs assembles the ffmpeg command line from params. Kept
 // separate to keep NewH264Encoder readable and to make these knobs easy to
@@ -158,7 +169,7 @@ func buildFFmpegArgs(p EncoderParams) []string {
 		// which breaks the VCL=AU-boundary grouping in readAUs. scenecut=0
 		// keeps IDRs strictly at -g intervals so late-joining readers
 		// recover predictably.
-		"-x264-params", "sliced-threads=0:scenecut=0",
+		"-x264-params", x264Params(),
 		// Repeat SPS/PPS at every IDR so late-joining RTSP readers can decode.
 		"-bsf:v", "dump_extra=freq=keyframe",
 	)
@@ -211,9 +222,11 @@ func (e *H264Encoder) readAUs() error {
 	parseBuf := make([]byte, 0, 1<<17)
 	readBuf := make([]byte, 8192)
 	var currentAU [][]byte
+	var headStamped, auHasVCL bool
 
 	for {
 		n, err := e.stdout.Read(readBuf)
+		now := time.Now()
 		if n > 0 {
 			parseBuf = append(parseBuf, readBuf[:n]...)
 			for {
@@ -222,6 +235,13 @@ func (e *H264Encoder) readAUs() error {
 					break
 				}
 				start := sc1 + sc1Len
+				if !headStamped && e.params.OnFrameOut != nil && start+1 < len(parseBuf) {
+					t := parseBuf[start] & 0x1F
+					if (t == 1 || t == 5) && parseBuf[start+1]&0x80 != 0 {
+						e.params.OnFrameOut(now)
+					}
+					headStamped = true
+				}
 				sc2, _ := findStartCode(parseBuf[start:])
 				if sc2 < 0 {
 					if sc1 > 0 {
@@ -232,10 +252,24 @@ func (e *H264Encoder) readAUs() error {
 				end := start + sc2
 				nal := make([]byte, end-start)
 				copy(nal, parseBuf[start:end])
-				currentAU = append(currentAU, nal)
-				if len(nal) > 0 && (nal[0]&0x1F == 1 || nal[0]&0x1F == 5) {
-					e.params.OnData(currentAU)
-					currentAU = nil
+				headStamped = false
+				vcl := len(nal) > 0 && (nal[0]&0x1F == 1 || nal[0]&0x1F == 5)
+				if encoderSliced {
+					// Several slices per picture: a picture ends where the
+					// next picture's first slice or a non-VCL NAL begins.
+					first := vcl && len(nal) > 1 && nal[1]&0x80 != 0
+					if auHasVCL && (first || !vcl) {
+						e.params.OnData(currentAU)
+						currentAU, auHasVCL = nil, false
+					}
+					currentAU = append(currentAU, nal)
+					auHasVCL = auHasVCL || vcl
+				} else {
+					currentAU = append(currentAU, nal)
+					if vcl {
+						e.params.OnData(currentAU)
+						currentAU = nil
+					}
 				}
 				parseBuf = parseBuf[end:]
 			}
