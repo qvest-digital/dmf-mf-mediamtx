@@ -109,8 +109,9 @@ func defaultIDRPeriod(rateNum, rateDen int64) uint32 {
 	return uint32(idr)
 }
 
-// encoderThreads is the number of slices x264 cuts each picture into, one
-// thread each.
+// encoderThreads is the number of slice threads x264 runs, one slice each.
+// x264 gives a slice at least four macroblock rows, so pictures shorter than
+// 256 px get fewer slices.
 //
 // Sliced threads encode the slices of one picture in parallel and hold no
 // frame back. Frame threading, x264's default, holds threads-1 frames before
