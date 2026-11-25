@@ -1,6 +1,7 @@
 package mxl
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -40,10 +41,11 @@ type EncoderParams struct {
 // keeps any GPL bits out of the mediamtx binary and lets the operator pick a
 // different encoder build at deploy time.
 //
-// Because the end of a picture is only known once the start code of the next
-// picture has been read, there is an inherent one-frame latency between
-// Encode and the corresponding OnData call. x264 itself holds no frame; see
-// encoderThreads.
+// ffmpeg writes NUT rather than a raw H.264 stream: NUT states each frame's
+// size, so an access unit is handed on as soon as its last byte arrives. In
+// a raw Annex-B stream a picture's end only shows once the next picture
+// starts, one frame period later, 40 ms at 25 fps. x264 itself holds no
+// frame; see encoderThreads.
 type H264Encoder struct {
 	*ffmpegProcess
 	params EncoderParams
@@ -171,7 +173,7 @@ func buildFFmpegArgs(p EncoderParams) []string {
 	}
 
 	args = append(args,
-		"-f", "h264",
+		"-f", "nut",
 		"-flush_packets", "1",
 		"pipe:1",
 	)
@@ -195,73 +197,42 @@ func (e *H264Encoder) Encode(y, cb, cr []byte) error {
 	return e.write(e.yuvBuf)
 }
 
-// readAUs parses ffmpeg's stdout into Annex-B NAL units, groups them into
-// access units, and invokes the OnData callback for each complete AU.
-//
-// AU grouping rule: a picture is several VCL NALs (types 1=non-IDR slice or
-// 5=IDR slice), one per slice, preceded by any SPS/PPS/SEI that
-// `-bsf:v dump_extra=freq=keyframe` puts in front of an IDR. An AU that holds
-// a slice is complete, and the callback fires, as soon as the head of the
-// next NAL shows a non-VCL NAL or the first slice of the next picture.
-//
-// That head only arrives with the next picture's output, so the first AU
-// emerges only after the second frame is pushed.
+// readAUs reads the NUT frames ffmpeg writes, each one access unit in
+// Annex-B form, and invokes the OnData callback for each as soon as it is
+// complete. dump_extra puts SPS and PPS in front of every IDR in-band, so
+// late-joining readers can decode.
 func (e *H264Encoder) readAUs() error {
-	parseBuf := make([]byte, 0, 1<<17)
-	readBuf := make([]byte, 8192)
-	var currentAU [][]byte
-	var auHasSlice bool
-
+	r := newNUTReader(e.stdout)
 	for {
-		n, err := e.stdout.Read(readBuf)
-		if n > 0 {
-			parseBuf = append(parseBuf, readBuf[:n]...)
-			for {
-				sc1, sc1Len := findStartCode(parseBuf)
-				if sc1 < 0 {
-					break
-				}
-				start := sc1 + sc1Len
-				// The next NAL's first two bytes decide whether the picture
-				// before it is complete, so it is handed on before the rest
-				// of that NAL arrives.
-				if auHasSlice && start+1 < len(parseBuf) && startsPicture(parseBuf[start:]) {
-					e.params.OnData(currentAU)
-					currentAU, auHasSlice = nil, false
-				}
-				sc2, _ := findStartCode(parseBuf[start:])
-				if sc2 < 0 {
-					if sc1 > 0 {
-						parseBuf = parseBuf[sc1:]
-					}
-					break
-				}
-				end := start + sc2
-				nal := make([]byte, end-start)
-				copy(nal, parseBuf[start:end])
-				currentAU = append(currentAU, nal)
-				auHasSlice = auHasSlice || isSlice(nal)
-				parseBuf = parseBuf[end:]
-			}
+		frame, err := r.next()
+		if errors.Is(err, io.EOF) {
+			return nil
 		}
 		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
 			return fmt.Errorf("ffmpeg stdout: %w", err)
+		}
+		if au := splitAnnexB(frame); len(au) > 0 {
+			e.params.OnData(au)
 		}
 	}
 }
 
-func isSlice(nal []byte) bool {
-	return len(nal) > 0 && (nal[0]&0x1F == 1 || nal[0]&0x1F == 5)
-}
-
-// startsPicture reports whether a NAL that follows a slice begins the next
-// access unit: any non-VCL NAL, or a slice with first_mb_in_slice 0, whose
-// ue(v) code is the single bit 1. nal holds at least two bytes.
-func startsPicture(nal []byte) bool {
-	return !isSlice(nal) || nal[1]&0x80 != 0
+// splitAnnexB splits one access unit in Annex-B form into its NAL units.
+func splitAnnexB(b []byte) [][]byte {
+	var nals [][]byte
+	for {
+		sc, l := findStartCode(b)
+		if sc < 0 {
+			return nals
+		}
+		b = b[sc+l:]
+		next, _ := findStartCode(b)
+		if next < 0 {
+			return append(nals, b)
+		}
+		nals = append(nals, b[:next])
+		b = b[next:]
+	}
 }
 
 // findStartCode returns (offset, length) of the first Annex-B start code in
