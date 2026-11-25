@@ -25,7 +25,7 @@ func TestFFmpegProcessStopsWhenTheReaderFails(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- p.Wait() }()
 	select {
-	case err := <-done:
+	case err = <-done:
 		require.ErrorIs(t, err, readErr)
 	case <-time.After(5 * time.Second):
 		_ = p.cmd.Process.Kill()

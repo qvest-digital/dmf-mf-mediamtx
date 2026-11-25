@@ -101,7 +101,7 @@ func (n *nutReader) next() ([]byte, error) {
 			return nil, err
 		}
 		if code == 'N' {
-			if err := n.readPacket(); err != nil {
+			if err = n.readPacket(); err != nil {
 				return nil, err
 			}
 			continue
@@ -128,7 +128,7 @@ func (n *nutReader) readPacket() error {
 		return err
 	}
 	if size > 4096 {
-		if err := n.skip(4); err != nil {
+		if err = n.skip(4); err != nil {
 			return err
 		}
 	}
@@ -136,11 +136,11 @@ func (n *nutReader) readPacket() error {
 		return fmt.Errorf("nut: packet of %d bytes", size)
 	}
 	body := make([]byte, size)
-	if _, err := io.ReadFull(n.r, body); err != nil {
+	if _, err = io.ReadFull(n.r, body); err != nil {
 		return err
 	}
 	if startcode == nutMainStartcode {
-		if err := n.parseMain(body); err != nil {
+		if err = n.parseMain(body); err != nil {
 			return fmt.Errorf("nut: main header: %w", err)
 		}
 		n.haveMain = true
@@ -169,12 +169,12 @@ func (n *nutReader) parseMain(body []byte) error {
 		return err
 	}
 	if version > 3 {
-		if _, err := v(1); err != nil { // minor version
+		if _, err = v(1); err != nil { // minor version
 			return err
 		}
 	}
 	// Stream count and max distance, then the time bases.
-	if _, err := v(2); err != nil {
+	if _, err = v(2); err != nil {
 		return err
 	}
 	timeBases, err := v(1)
@@ -186,17 +186,18 @@ func (n *nutReader) parseMain(body []byte) error {
 	if timeBases > uint64(b.Len()) {
 		return fmt.Errorf("%d time bases", timeBases)
 	}
-	if _, err := v(2 * int(timeBases)); err != nil {
+	if _, err = v(2 * int(timeBases)); err != nil {
 		return err
 	}
 
 	var mul, headIdx uint64 = 1, 0
 	for i := 0; i < 256; {
-		flags, err := v(1)
+		var flags, fields uint64
+		flags, err = v(1)
 		if err != nil {
 			return err
 		}
-		fields, err := v(1)
+		fields, err = v(1)
 		if err != nil {
 			return err
 		}
@@ -256,7 +257,8 @@ func (n *nutReader) parseMain(body []byte) error {
 		return fmt.Errorf("%d elision headers", extra+1)
 	}
 	for range extra {
-		l, err := v(1)
+		var l uint64
+		l, err = v(1)
 		if err != nil {
 			return err
 		}
@@ -264,7 +266,7 @@ func (n *nutReader) parseMain(body []byte) error {
 			return fmt.Errorf("elision header of %d bytes", l)
 		}
 		h := make([]byte, l)
-		if _, err := io.ReadFull(b, h); err != nil {
+		if _, err = io.ReadFull(b, h); err != nil {
 			return err
 		}
 		n.headers = append(n.headers, h)
@@ -304,7 +306,7 @@ func (n *nutReader) readFrame(code byte) ([]byte, error) {
 		return nil, err
 	}
 	size += fc.sizeMul * msb
-	if _, err := read(nutFlagMatchTime); err != nil {
+	if _, err = read(nutFlagMatchTime); err != nil {
 		return nil, err
 	}
 	headerIdx := fc.headerIdx
@@ -320,12 +322,12 @@ func (n *nutReader) readFrame(code byte) ([]byte, error) {
 		}
 	}
 	for range reserved {
-		if _, err := n.v(); err != nil {
+		if _, err = n.v(); err != nil {
 			return nil, err
 		}
 	}
 	if flags&nutFlagChecksum != 0 {
-		if err := n.skip(4); err != nil {
+		if err = n.skip(4); err != nil {
 			return nil, err
 		}
 	}
@@ -344,7 +346,7 @@ func (n *nutReader) readFrame(code byte) ([]byte, error) {
 	}
 	frame := make([]byte, size)
 	copy(frame, head)
-	if _, err := io.ReadFull(n.r, frame[len(head):]); err != nil {
+	if _, err = io.ReadFull(n.r, frame[len(head):]); err != nil {
 		return nil, err
 	}
 	return frame, nil

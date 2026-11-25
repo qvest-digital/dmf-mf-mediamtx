@@ -2,6 +2,7 @@ package mxl
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os/exec"
 	"testing"
@@ -19,7 +20,7 @@ func nutVBytes(x uint64) []byte {
 }
 
 func nutVs(xs ...uint64) []byte {
-	var b []byte
+	b := make([]byte, 0, len(xs))
 	for _, x := range xs {
 		b = append(b, nutVBytes(x)...)
 	}
@@ -169,11 +170,11 @@ func TestNUTReaderMatchesFFmpeg(t *testing.T) {
 	var got []byte
 	var n, large int
 	for {
-		frame, err := r.next()
-		if err == io.EOF {
+		frame, nextErr := r.next()
+		if errors.Is(nextErr, io.EOF) {
 			break
 		}
-		require.NoError(t, err)
+		require.NoError(t, nextErr)
 		nals := splitAnnexB(frame)
 		require.NotEmpty(t, nals)
 		if n%13 == 0 {
