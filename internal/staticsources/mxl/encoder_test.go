@@ -1,6 +1,11 @@
 package mxl
 
 import (
+	"bytes"
+	"io"
+	"os/exec"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/qvest-digital/go-mxl/mxl"
@@ -53,17 +58,102 @@ func TestBuildFFmpegArgsRate(t *testing.T) {
 	}
 }
 
-func TestBuildFFmpegArgsCapsThreads(t *testing.T) {
-	// Without a count of its own x264 takes one and a half per host core and
-	// holds one frame per thread, which is where the latency this bounds
-	// comes from -- and past 64 frames in flight the source stops entirely.
+func TestBuildFFmpegArgsSlicesInsteadOfFrameThreads(t *testing.T) {
+	// Frame threading holds threads-1 frames before any output, 120 ms at
+	// 25 fps with four threads; sliced threads hold none. The count is fixed
+	// rather than one and a half per host core, x264's own default.
 	args := buildFFmpegArgs(EncoderParams{
 		Width: 1920, Height: 1080,
 		RateNum: 60000, RateDen: 1001,
 		Preset: "veryfast", Profile: "high",
 	})
 	require.Equal(t, "4", argValue(t, args, "-threads"))
-	require.Less(t, encoderThreads, maxPendingIndices)
+	require.Contains(t, strings.Split(argValue(t, args, "-x264-params"), ":"), "sliced-threads=1")
+}
+
+// annexB joins NAL units into an Annex-B byte stream.
+func annexB(nals ...[]byte) []byte {
+	var b []byte
+	for _, n := range nals {
+		b = append(b, 0, 0, 0, 1)
+		b = append(b, n...)
+	}
+	return b
+}
+
+func TestReadAUsGroupsSlicesIntoOnePicture(t *testing.T) {
+	// Header byte, then the slice header whose first bit is set exactly when
+	// first_mb_in_slice is 0. One access unit per picture is what pairs each
+	// one with its grain index; one per slice would run the queue dry and
+	// stamp a picture's slices with different timestamps.
+	sps, pps := []byte{0x67, 0x64}, []byte{0x68, 0xee}
+	idrFirst, idrNext := []byte{0x65, 0x88, 1}, []byte{0x65, 0x40, 2}
+	pFirst, pNext := []byte{0x41, 0x9a, 3}, []byte{0x41, 0x30, 4}
+	stream := annexB(
+		sps, pps, idrFirst, idrNext, idrNext, idrNext,
+		pFirst, pNext, pNext, pNext,
+		pFirst, pNext,
+		// The last picture's end is never seen before EOF.
+		pFirst,
+	)
+
+	var aus [][][]byte
+	e := &H264Encoder{
+		ffmpegProcess: &ffmpegProcess{stdout: io.NopCloser(bytes.NewReader(stream))},
+		params:        EncoderParams{OnData: func(au [][]byte) { aus = append(aus, au) }},
+	}
+	require.NoError(t, e.readAUs())
+
+	require.Equal(t, [][][]byte{
+		{sps, pps, idrFirst, idrNext, idrNext, idrNext},
+		{pFirst, pNext, pNext, pNext},
+		{pFirst, pNext},
+	}, aus)
+}
+
+func TestH264EncoderOneAccessUnitPerFrame(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+
+	const w, h, frames = 640, 360, 20
+	var mu sync.Mutex
+	var slices []int
+	enc, err := NewH264Encoder(EncoderParams{
+		Width: w, Height: h, RateNum: 25, RateDen: 1,
+		Preset: "superfast", Profile: "high", Bitrate: 1_000_000,
+		OnData: func(au [][]byte) {
+			n := 0
+			for _, nal := range au {
+				if typ := nal[0] & 0x1F; typ == 1 || typ == 5 {
+					n++
+				}
+			}
+			mu.Lock()
+			slices = append(slices, n)
+			mu.Unlock()
+		},
+	})
+	require.NoError(t, err)
+
+	y, c := make([]byte, w*h), make([]byte, w*h/4)
+	for i := range frames {
+		for j := range y {
+			y[j] = byte(i*7 + j%251)
+		}
+		require.NoError(t, enc.Encode(y, c, c))
+	}
+	enc.Close()
+	_ = enc.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	// The last picture stays unfinished: its end would be the next one's
+	// start.
+	require.Len(t, slices, frames-1)
+	for _, n := range slices {
+		require.Equal(t, encoderThreads, n)
+	}
 }
 
 func TestBuildFFmpegArgsIDRPeriodOverride(t *testing.T) {
