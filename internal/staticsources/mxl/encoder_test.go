@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/qvest-digital/go-mxl/mxl"
 	"github.com/stretchr/testify/require"
@@ -135,6 +136,10 @@ func TestH264EncoderOneAccessUnitPerFrame(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		enc.Close()
+		_ = enc.Wait()
+	})
 
 	y, c := make([]byte, w*h), make([]byte, w*h/4)
 	for i := range frames {
@@ -143,13 +148,18 @@ func TestH264EncoderOneAccessUnitPerFrame(t *testing.T) {
 		}
 		require.NoError(t, enc.Encode(y, c, c))
 	}
-	enc.Close()
-	_ = enc.Wait()
+
+	// Encode returns once the frame is in the pipe, not once it is
+	// encoded. The last picture stays unfinished: its end would be the next
+	// one's start.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(slices) >= frames-1
+	}, 10*time.Second, 10*time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
-	// The last picture stays unfinished: its end would be the next one's
-	// start.
 	require.Len(t, slices, frames-1)
 	for _, n := range slices {
 		require.Equal(t, encoderThreads, n)
