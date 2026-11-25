@@ -16,6 +16,7 @@
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance Improvements" },
     { "type": "deps", "section": "Dependencies" },
     { "type": "build", "section": "Build System" },
     { "type": "ci", "section": "Continuous Integration" },
