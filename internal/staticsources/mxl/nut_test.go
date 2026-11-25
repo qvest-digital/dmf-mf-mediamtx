@@ -26,7 +26,8 @@ func nutVs(xs ...uint64) []byte {
 	return b
 }
 
-// nutPacket frames a body as a startcode packet with a zero checksum.
+// nutPacket frames a body as a startcode packet. Checksums are zero; the
+// reader skips them.
 func nutPacket(startcode uint64, body []byte) []byte {
 	var b []byte
 	for i := 7; i >= 0; i-- {
@@ -34,8 +35,13 @@ func nutPacket(startcode uint64, body []byte) []byte {
 	}
 	body = append(body, 0, 0, 0, 0)
 	b = append(b, nutVBytes(uint64(len(body)))...)
+	if len(body) > 4096 {
+		b = append(b, 0, 0, 0, 0) // header checksum
+	}
 	return append(b, body...)
 }
+
+const nutInfoStartcode = 0xAB68B596BA78 + uint64('N'<<8+'I')<<48
 
 func TestNUTReaderReadsFrames(t *testing.T) {
 	// Main header, version 3, one stream, one time base. Frame codes 0-128
@@ -77,25 +83,91 @@ func TestNUTReaderReadsFrames(t *testing.T) {
 		append(splitAnnexB(frame1), splitAnnexB(frame2)...))
 }
 
+func TestNUTReaderFrameHeaderFields(t *testing.T) {
+	// Group 1 sets the size multiplier to 4 and elision header 1 for code 0.
+	// Group 2 sets only the pts field, so codes 1-4 keep both, and its
+	// flags make the frame header carry coded flags.
+	main := nutVs(3, 1, 65536, 1, 1, 25)
+	main = append(main, nutVs(nutFlagSizeMSB, 8, 0, 4, 0, 0, 0, 1, 0, 1)...)
+	main = append(main, nutVs(nutFlagSizeMSB|nutFlagCoded, 1, 0)...)
+	main = append(main, nutVs(nutFlagSizeMSB, 6, 0, 1, 0, 0, 0, 250)...)
+	main = append(main, nutVs(1, 3)...)
+	main = append(main, 0, 0, 1)
+
+	stream := []byte(nutIDString)
+	stream = append(stream, nutPacket(nutMainStartcode, main)...)
+	// An info packet above 4096 bytes carries a header checksum.
+	stream = append(stream, nutPacket(nutInfoStartcode, make([]byte, 5000))...)
+
+	// Code 0: size 4*2 = 8, three of them elided.
+	stream = append(stream, 0)
+	stream = append(stream, nutVs(2)...)
+	stream = append(stream, 0x65, 0x88, 1, 2, 3)
+	// Code 2: coded flags add a frame checksum; size LSB 1 (its place in
+	// group 2) + 4*1 = 5, three elided, multiplier and header carried over
+	// from group 1.
+	stream = append(stream, 2)
+	stream = append(stream, nutVs(nutFlagChecksum, 1)...)
+	stream = append(stream, 9, 9, 9, 9)
+	stream = append(stream, 0x41, 0x9a)
+	// Code 1: a frame above 4096 bytes has no elided header.
+	big := make([]byte, 4*1025)
+	copy(big, []byte{0, 0, 1, 0x41, 0x9a})
+	stream = append(stream, 1)
+	stream = append(stream, nutVs(0, 1025)...)
+	stream = append(stream, big...)
+
+	r := newNUTReader(bytes.NewReader(stream))
+	for _, want := range [][]byte{
+		{0, 0, 1, 0x65, 0x88, 1, 2, 3},
+		{0, 0, 1, 0x41, 0x9a},
+		big,
+	} {
+		got, err := r.next()
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+	}
+}
+
+func TestNUTReaderRejectsCorruptMainHeader(t *testing.T) {
+	// A field count no packet could hold must fail, not allocate it.
+	main := nutVs(3, 1, 65536, 1, 1, 25)
+	main = append(main, nutVs(nutFlagSizeMSB, 1<<40)...)
+	stream := append([]byte(nutIDString), nutPacket(nutMainStartcode, main)...)
+	_, err := newNUTReader(bytes.NewReader(stream)).next()
+	require.ErrorContains(t, err, "frame code fields")
+}
+
 func TestNUTReaderRejectsOtherStreams(t *testing.T) {
 	_, err := newNUTReader(bytes.NewReader([]byte("\x00\x00\x00\x01\x67not a nut stream at all"))).next()
 	require.Error(t, err)
 }
 
-func TestNUTReaderReadsFFmpegFrames(t *testing.T) {
+func TestNUTReaderMatchesFFmpeg(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg not on PATH")
 	}
-	const frames = 30
+	// Noise at a high rate makes frames larger than 64 KiB, which ffmpeg
+	// writes with a frame checksum and coded flags, as a busy 1080p preview
+	// does.
+	const frames = 26
 	out, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
-		"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25", "-frames:v", "30",
+		"-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=25,noise=alls=40:allf=t", "-frames:v", "26",
 		"-c:v", "libx264", "-preset", "superfast", "-tune", "zerolatency", "-threads", "4",
-		"-x264-params", "sliced-threads=1", "-g", "13",
+		"-x264-params", "sliced-threads=1", "-g", "13", "-b:v", "40M",
 		"-bsf:v", "dump_extra=freq=keyframe", "-f", "nut", "pipe:1").Output()
 	require.NoError(t, err)
 
+	// ffmpeg's own demuxer, remuxed to a raw stream, is the reference.
+	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
+		"-f", "nut", "-i", "pipe:0", "-c", "copy", "-f", "h264", "pipe:1")
+	cmd.Stdin = bytes.NewReader(out)
+	want, err := cmd.Output()
+	require.NoError(t, err)
+
 	r := newNUTReader(bytes.NewReader(out))
-	var got int
+	var got []byte
+	var n, large int
 	for {
 		frame, err := r.next()
 		if err == io.EOF {
@@ -104,18 +176,24 @@ func TestNUTReaderReadsFFmpegFrames(t *testing.T) {
 		require.NoError(t, err)
 		nals := splitAnnexB(frame)
 		require.NotEmpty(t, nals)
-		if got%13 == 0 {
+		if n%13 == 0 {
 			// dump_extra puts SPS and PPS in front of every IDR.
-			require.Equal(t, byte(7), nals[0][0]&0x1F, "frame %d", got)
+			require.Equal(t, byte(7), nals[0][0]&0x1F, "frame %d", n)
 		}
 		slices := 0
-		for _, n := range nals {
-			if typ := n[0] & 0x1F; typ == 1 || typ == 5 {
+		for _, nal := range nals {
+			if typ := nal[0] & 0x1F; typ == 1 || typ == 5 {
 				slices++
 			}
 		}
-		require.Equal(t, encoderThreads, slices, "frame %d", got)
-		got++
+		require.Equal(t, encoderThreads, slices, "frame %d", n)
+		if len(frame) > 64<<10 {
+			large++
+		}
+		got = append(got, frame...)
+		n++
 	}
-	require.Equal(t, frames, got)
+	require.Equal(t, frames, n)
+	require.Positive(t, large, "no frame above 64 KiB")
+	require.Equal(t, want, got)
 }

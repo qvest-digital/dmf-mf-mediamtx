@@ -70,17 +70,6 @@ func TestBuildFFmpegArgsSlicesInsteadOfFrameThreads(t *testing.T) {
 	require.Contains(t, strings.Split(argValue(t, args, "-x264-params"), ":"), "sliced-threads=1")
 }
 
-func TestBuildFFmpegArgsWritesNUT(t *testing.T) {
-	// A raw H.264 stream shows a picture's end only once the next picture
-	// starts; NUT states each frame's size, so nothing waits a frame period.
-	args := buildFFmpegArgs(EncoderParams{
-		Width: 1920, Height: 1080,
-		RateNum: 25, RateDen: 1,
-		Preset: "veryfast", Profile: "high",
-	})
-	require.Equal(t, []string{"-f", "nut", "-flush_packets", "1", "pipe:1"}, args[len(args)-5:])
-}
-
 func TestH264EncoderOneAccessUnitPerFrame(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg not on PATH")

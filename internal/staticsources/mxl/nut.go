@@ -181,6 +181,11 @@ func (n *nutReader) parseMain(body []byte) error {
 	if err != nil {
 		return err
 	}
+	// Every count below is bounded by the bytes left, so a corrupt value
+	// is an error rather than an allocation the size of the value.
+	if timeBases > uint64(b.Len()) {
+		return fmt.Errorf("%d time bases", timeBases)
+	}
 	if _, err := v(2 * int(timeBases)); err != nil {
 		return err
 	}
@@ -194,6 +199,9 @@ func (n *nutReader) parseMain(body []byte) error {
 		fields, err := v(1)
 		if err != nil {
 			return err
+		}
+		if fields > uint64(b.Len()) {
+			return fmt.Errorf("%d frame code fields", fields)
 		}
 		vals := make([]uint64, fields)
 		for f := range vals {
@@ -244,10 +252,16 @@ func (n *nutReader) parseMain(body []byte) error {
 	if err != nil {
 		return err
 	}
+	if extra >= 128 {
+		return fmt.Errorf("%d elision headers", extra+1)
+	}
 	for range extra {
 		l, err := v(1)
 		if err != nil {
 			return err
+		}
+		if l > uint64(b.Len()) {
+			return fmt.Errorf("elision header of %d bytes", l)
 		}
 		h := make([]byte, l)
 		if _, err := io.ReadFull(b, h); err != nil {

@@ -56,7 +56,7 @@ type H264Encoder struct {
 }
 
 // NewH264Encoder starts an ffmpeg process configured to take raw yuv420p
-// frames on stdin and emit H.264 Annex-B on stdout. Encoded access units are
+// frames on stdin and write H.264 in NUT on stdout. Encoded access units are
 // delivered via p.OnData. ffmpeg's stderr is inherited from the parent
 // process so warnings surface where the operator expects them.
 func NewH264Encoder(p EncoderParams) (*H264Encoder, error) {
@@ -161,6 +161,8 @@ func buildFFmpegArgs(p EncoderParams) []string {
 		// late-joining readers recover predictably.
 		"-x264-params", "sliced-threads=1:scenecut=0",
 		// Repeat SPS/PPS at every IDR so late-joining RTSP readers can decode.
+		// NUT asks for global headers, so x264 writes them to extradata
+		// only, and this is what puts them in-band.
 		"-bsf:v", "dump_extra=freq=keyframe",
 	)
 

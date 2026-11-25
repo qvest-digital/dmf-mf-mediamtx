@@ -131,9 +131,12 @@ func (f *ffmpegProcess) runInner() error {
 		return fmt.Errorf("ffmpeg exited unexpectedly")
 
 	case err := <-readDone:
+		// Nothing reads stdout any more, so ffmpeg's next write past the
+		// pipe buffer would block it before it ever sees stdin's EOF.
+		// Closing stdout first fails that write instead.
 		_ = f.stdin.Close()
-		<-cmdDone
 		_ = f.stdout.Close()
+		<-cmdDone
 		return err
 
 	case <-f.terminate:
