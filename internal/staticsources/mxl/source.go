@@ -271,6 +271,7 @@ func (s *Source) runVideo(
 		clock.first, clock.firstSet = track.epochIndex, true
 	}
 	pending := &pendingIndices{}
+	probe := newLatencyProbe(func(f string, a ...any) { s.Log(logger.Info, f, a...) })
 	var warnedStarved, warnedStalled bool
 
 	onData := func(au [][]byte) {
@@ -286,6 +287,8 @@ func (s *Source) runVideo(
 		// dropped grain advances it by more than one, so the timeline
 		// keeps pace with real time instead of falling behind by every
 		// frame that was skipped.
+		handed := time.Now()
+		ft := probe.pop()
 		var ptsTicks int64
 		if index, ok := pending.pop(); ok {
 			before := clock.last
@@ -320,9 +323,13 @@ func (s *Source) runVideo(
 		}
 		pub.write(media, ptsTicks, rtpClockRate, pkts)
 		published = true
+		probe.record(ft, handed, time.Now())
 	}
 
-	enc, err := NewH264Encoder(encoderParamsFromConf(params.Conf, width, height, encodeRate, onData))
+	encParams := encoderParamsFromConf(params.Conf, width, height, encodeRate, onData)
+	encParams.OnFrameOut = probe.x264Out
+	s.Log(logger.Info, "latency-probe build: nut=%v", encoderNUT)
+	enc, err := NewH264Encoder(encParams)
 	if err != nil {
 		return fmt.Errorf("h264 encoder: %w", err)
 	}
@@ -418,6 +425,7 @@ func (s *Source) runVideo(
 
 		var grain mxl.Grain
 		grain, err = reader.GetGrain(idx, readTimeout)
+		readAt := time.Now()
 		switch {
 		case err == nil:
 			// fall through
@@ -529,7 +537,9 @@ func (s *Source) runVideo(
 			continue
 		}
 
+		ft := &frameTimes{read: readAt}
 		err = unpacker.Unpack(grain.Payload, srcStride, yPlane, cbPlane, crPlane)
+		ft.unpacked = time.Now()
 		if err != nil {
 			s.Log(logger.Error, "v210 unpack: %v", err)
 			idx, err = freshestIndex()
@@ -547,10 +557,12 @@ func (s *Source) runVideo(
 				"coming back one per frame", pending.depth())
 		}
 
+		probe.push(ft)
 		err = enc.Encode(yPlane, cbPlane, crPlane)
 		if err != nil {
 			return fmt.Errorf("encoder write: %w", err)
 		}
+		probe.setPiped(ft, time.Now())
 		encoded, nextEncode = true, grain.Index+uint64(step)
 
 		// Always pick the freshest available grain next, dropping any

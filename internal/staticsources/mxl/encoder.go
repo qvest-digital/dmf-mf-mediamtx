@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 )
 
 // EncoderParams configures the H264Encoder. Fields mirror the mxlH264* path
@@ -32,6 +33,10 @@ type EncoderParams struct {
 	// substream, log, etc.); blocking propagates back as natural
 	// backpressure on the encoder pipe.
 	OnData func(au [][]byte)
+
+	// OnFrameOut, when set, is called as a picture's output starts arriving
+	// from ffmpeg.
+	OnFrameOut func(t time.Time)
 }
 
 // H264Encoder pipes planar YUV 4:2:0 frames into an ffmpeg subprocess and
@@ -85,6 +90,9 @@ func NewH264Encoder(p EncoderParams) (*H264Encoder, error) {
 		cSize:         cSize,
 	}
 	proc.readAll = e.readAUs
+	if encoderNUT {
+		proc.readAll = e.readNUT
+	}
 	go proc.run()
 	return e, nil
 }
@@ -170,8 +178,12 @@ func buildFFmpegArgs(p EncoderParams) []string {
 		)
 	}
 
+	format := "h264"
+	if encoderNUT {
+		format = "nut"
+	}
 	args = append(args,
-		"-f", "h264",
+		"-f", format,
 		"-flush_packets", "1",
 		"pipe:1",
 	)
@@ -210,10 +222,11 @@ func (e *H264Encoder) readAUs() error {
 	parseBuf := make([]byte, 0, 1<<17)
 	readBuf := make([]byte, 8192)
 	var currentAU [][]byte
-	var auHasSlice bool
+	var auHasSlice, headStamped bool
 
 	for {
 		n, err := e.stdout.Read(readBuf)
+		now := time.Now()
 		if n > 0 {
 			parseBuf = append(parseBuf, readBuf[:n]...)
 			for {
@@ -222,6 +235,12 @@ func (e *H264Encoder) readAUs() error {
 					break
 				}
 				start := sc1 + sc1Len
+				if !headStamped && e.params.OnFrameOut != nil && start+1 < len(parseBuf) {
+					if isSlice(parseBuf[start:]) && parseBuf[start+1]&0x80 != 0 {
+						e.params.OnFrameOut(now)
+					}
+					headStamped = true
+				}
 				// The next NAL's first two bytes decide whether the picture
 				// before it is complete, so it is handed on before the rest
 				// of that NAL arrives.
@@ -239,6 +258,7 @@ func (e *H264Encoder) readAUs() error {
 				end := start + sc2
 				nal := make([]byte, end-start)
 				copy(nal, parseBuf[start:end])
+				headStamped = false
 				currentAU = append(currentAU, nal)
 				auHasSlice = auHasSlice || isSlice(nal)
 				parseBuf = parseBuf[end:]
@@ -262,6 +282,27 @@ func isSlice(nal []byte) bool {
 // ue(v) code is the single bit 1. nal holds at least two bytes.
 func startsPicture(nal []byte) bool {
 	return !isSlice(nal) || nal[1]&0x80 != 0
+}
+
+// readNUT reads NUT frames from ffmpeg's stdout, each one access unit, and
+// hands each on as soon as its last byte has arrived.
+func (e *H264Encoder) readNUT() error {
+	r := newNUTReader(e.stdout)
+	if e.params.OnFrameOut != nil {
+		r.onFrameStart = func() { e.params.OnFrameOut(time.Now()) }
+	}
+	for {
+		frame, err := r.next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("ffmpeg stdout: %w", err)
+		}
+		if au := splitAnnexB(frame); len(au) > 0 {
+			e.params.OnData(au)
+		}
+	}
 }
 
 // findStartCode returns (offset, length) of the first Annex-B start code in
