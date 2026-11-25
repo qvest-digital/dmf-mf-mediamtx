@@ -6,8 +6,8 @@ import "sync"
 const rtpClockRate = 90000
 
 // maxPendingIndices bounds the reader-to-encoder queue below. The encoder
-// holds one frame for the picture boundary, so anything beyond a handful
-// means ffmpeg is buffering frames it was told not to buffer.
+// holds no frame back, so anything beyond a handful means ffmpeg is
+// buffering frames it was told not to buffer.
 const maxPendingIndices = 64
 
 // ptsClock turns an MXL grain index into an RTP timestamp.
@@ -68,9 +68,8 @@ func (c *ptsClock) ticks(index uint64) int64 {
 //
 // The encoder runs zerolatency with no B-frames and emits access units in
 // input order, one per input frame, so this is a plain FIFO. Its steady-state
-// depth is about one: a picture's end is only known once the next picture's
-// first NAL has been read, so an access unit emerges only after the frame
-// behind it has been pushed.
+// depth is the frame being encoded: each access unit comes back complete as
+// soon as x264 has finished it.
 type pendingIndices struct {
 	mu       sync.Mutex
 	q        []uint64

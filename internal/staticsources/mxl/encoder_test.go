@@ -1,13 +1,10 @@
 package mxl
 
 import (
-	"bytes"
-	"io"
 	"os/exec"
 	"strings"
 	"sync"
 	"testing"
-	"testing/iotest"
 	"time"
 
 	"github.com/qvest-digital/go-mxl/mxl"
@@ -73,82 +70,6 @@ func TestBuildFFmpegArgsSlicesInsteadOfFrameThreads(t *testing.T) {
 	require.Contains(t, strings.Split(argValue(t, args, "-x264-params"), ":"), "sliced-threads=1")
 }
 
-// annexB joins NAL units into an Annex-B byte stream.
-func annexB(nals ...[]byte) []byte {
-	var b []byte
-	for _, n := range nals {
-		b = append(b, 0, 0, 0, 1)
-		b = append(b, n...)
-	}
-	return b
-}
-
-func TestReadAUsGroupsSlicesIntoOnePicture(t *testing.T) {
-	// Header byte, then the slice header whose first bit is set exactly when
-	// first_mb_in_slice is 0. One access unit per picture is what pairs each
-	// one with its grain index; one per slice would run the queue dry and
-	// stamp a picture's slices with different timestamps.
-	sps, pps := []byte{0x67, 0x64}, []byte{0x68, 0xee}
-	idrFirst, idrNext := []byte{0x65, 0x88, 1}, []byte{0x65, 0x40, 2}
-	pFirst, pNext := []byte{0x41, 0x9a, 3}, []byte{0x41, 0x30, 4}
-	stream := annexB(
-		sps, pps, idrFirst, idrNext, idrNext, idrNext,
-		pFirst, pNext, pNext, pNext,
-		pFirst, pNext,
-		// The last picture's end is never seen before EOF.
-		pFirst,
-	)
-
-	// ffmpeg's pipe splits the stream anywhere, start codes and NAL heads
-	// included, so byte-at-a-time reads must group exactly like one read.
-	for name, r := range map[string]func() io.Reader{
-		"one read":   func() io.Reader { return bytes.NewReader(stream) },
-		"byte reads": func() io.Reader { return iotest.OneByteReader(bytes.NewReader(stream)) },
-	} {
-		t.Run(name, func(t *testing.T) {
-			var aus [][][]byte
-			e := &H264Encoder{
-				ffmpegProcess: &ffmpegProcess{stdout: io.NopCloser(r())},
-				params:        EncoderParams{OnData: func(au [][]byte) { aus = append(aus, au) }},
-			}
-			require.NoError(t, e.readAUs())
-
-			require.Equal(t, [][][]byte{
-				{sps, pps, idrFirst, idrNext, idrNext, idrNext},
-				{pFirst, pNext, pNext, pNext},
-				{pFirst, pNext},
-			}, aus)
-		})
-	}
-}
-
-func TestReadAUsHandsOnAPictureAtTheNextPicturesHead(t *testing.T) {
-	// x264 writes the next picture only once it is encoded, a frame interval
-	// later. Waiting for more than the two bytes that mark its first slice
-	// would add that interval to every picture's latency.
-	pFirst, pNext := []byte{0x41, 0x9a, 3}, []byte{0x41, 0x30, 4}
-	pr, pw := io.Pipe()
-	aus := make(chan [][]byte, 2)
-	e := &H264Encoder{
-		ffmpegProcess: &ffmpegProcess{stdout: pr},
-		params:        EncoderParams{OnData: func(au [][]byte) { aus <- au }},
-	}
-	done := make(chan error, 1)
-	go func() { done <- e.readAUs() }()
-
-	_, err := pw.Write(annexB(pFirst, pNext, []byte{0x41, 0x9a}))
-	require.NoError(t, err)
-	select {
-	case au := <-aus:
-		require.Equal(t, [][]byte{pFirst, pNext}, au)
-	case <-time.After(5 * time.Second):
-		t.Fatal("picture not handed on before the rest of the next one arrived")
-	}
-
-	require.NoError(t, pw.Close())
-	require.NoError(t, <-done)
-}
-
 func TestH264EncoderOneAccessUnitPerFrame(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg not on PATH")
@@ -187,17 +108,17 @@ func TestH264EncoderOneAccessUnitPerFrame(t *testing.T) {
 	}
 
 	// Encode returns once the frame is in the pipe, not once it is
-	// encoded. The last picture stays unfinished: its end would be the next
-	// one's start.
+	// encoded. The last picture arrives too, with no next picture to show
+	// where it ends.
 	require.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(slices) >= frames-1
+		return len(slices) >= frames
 	}, 10*time.Second, 10*time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Len(t, slices, frames-1)
+	require.Len(t, slices, frames)
 	for _, n := range slices {
 		require.Equal(t, encoderThreads, n)
 	}

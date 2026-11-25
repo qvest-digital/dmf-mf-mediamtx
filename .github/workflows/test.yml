@@ -99,4 +99,4 @@ jobs:
               apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null
               command -v ffmpeg >/dev/null
               ffmpeg -version | head -1
-              go test -count=1 -v -run "TestBuildOpusArgs|TestOpusEncoder" ./internal/staticsources/mxl/'
+              go test -count=1 -v -run "TestBuildOpusArgs|TestOpusEncoder|TestH264Encoder|TestNUTReader|TestFFmpegProcess" ./internal/staticsources/mxl/'
