@@ -40,10 +40,10 @@ type EncoderParams struct {
 // keeps any GPL bits out of the mediamtx binary and lets the operator pick a
 // different encoder build at deploy time.
 //
-// Because the boundary of NAL unit N is only known once the start code of
-// NAL unit N+1 has been read, there is an inherent one-frame latency
-// between Encode and the corresponding OnData call, on top of the frames
-// x264 holds in flight for its own threading. See encoderThreads.
+// Because the end of a picture is only known once the start code of the next
+// picture has been read, there is an inherent one-frame latency between
+// Encode and the corresponding OnData call. x264 itself holds no frame; see
+// encoderThreads.
 type H264Encoder struct {
 	*ffmpegProcess
 	params EncoderParams
@@ -107,20 +107,21 @@ func defaultIDRPeriod(rateNum, rateDen int64) uint32 {
 	return uint32(idr)
 }
 
-// encoderThreads caps x264's frame threading.
+// encoderThreads is the number of slice threads x264 runs, one slice each.
+// x264 gives a slice at least four macroblock rows, so pictures shorter than
+// 256 px get fewer slices.
 //
-// Left to itself x264 takes one and a half threads per host core, and every
-// frame thread is a frame the encoder holds before the first access unit
-// comes back: the delay is threads-1 frames whatever the picture costs to
-// encode. A 32-core node gives it 48 and a 128-core one its own ceiling of
-// 128, so the same path adds 818 ms of latency on the first and 2.1 s on the
-// second, measured at 1080p59.94. The second also holds more frames than
-// maxPendingIndices allows, so the reader-to-encoder queue overflows and the
-// source restarts rather than encoding at all.
+// Sliced threads encode the slices of one picture in parallel and hold no
+// frame back. Frame threading, x264's default, holds threads-1 frames before
+// the first access unit comes back whatever the picture costs to encode:
+// four frame threads measured 135 ms from pipe to output at 1080p25, four
+// slices 14.5 ms, at the same CPU and the same browser-visible quality at
+// 5 Mbit/s.
 //
-// Four threads hold three frames, 50 ms at 59.94. Against a noise-heavy
-// 1080p source on four cores they reach 136 fps where 48 threads on the same
-// four reach 152: the throughput the rest buy does not pay for the latency.
+// One thread is as fast at 1080p but cannot keep up with 2160p, which a
+// Xeon Gold 6430 core encodes at 18 to 23 fps. Every slice boundary costs
+// some compression, so the count stays at four rather than following the
+// host's cores.
 const encoderThreads = 4
 
 // buildFFmpegArgs assembles the ffmpeg command line from params. Kept
@@ -154,11 +155,10 @@ func buildFFmpegArgs(p EncoderParams) []string {
 		"-profile:v", p.Profile,
 		"-pix_fmt", "yuv420p",
 		"-g", strconv.FormatUint(uint64(idr), 10),
-		// `tune=zerolatency` enables sliced-threads (multi-slice frames),
-		// which breaks the VCL=AU-boundary grouping in readAUs. scenecut=0
-		// keeps IDRs strictly at -g intervals so late-joining readers
-		// recover predictably.
-		"-x264-params", "sliced-threads=0:scenecut=0",
+		// Sliced threads, which tune=zerolatency also sets; see
+		// encoderThreads. scenecut=0 keeps IDRs strictly at -g intervals so
+		// late-joining readers recover predictably.
+		"-x264-params", "sliced-threads=1:scenecut=0",
 		// Repeat SPS/PPS at every IDR so late-joining RTSP readers can decode.
 		"-bsf:v", "dump_extra=freq=keyframe",
 	)
@@ -199,18 +199,19 @@ func (e *H264Encoder) Encode(y, cb, cr []byte) error {
 // readAUs parses ffmpeg's stdout into Annex-B NAL units, groups them into
 // access units, and invokes the OnData callback for each complete AU.
 //
-// AU grouping rule: append NAL units to a "current AU" buffer; when we see
-// a VCL NAL (types 1=non-IDR slice or 5=IDR slice), the AU is complete and
-// the callback fires. SPS/PPS/SEI NALs that precede a VCL NAL end up
-// grouped with it, which matches what `-bsf:v dump_extra=freq=keyframe`
-// produces.
+// AU grouping rule: a picture is several VCL NALs (types 1=non-IDR slice or
+// 5=IDR slice), one per slice, preceded by any SPS/PPS/SEI that
+// `-bsf:v dump_extra=freq=keyframe` puts in front of an IDR. An AU that holds
+// a slice is complete, and the callback fires, as soon as the head of the
+// next NAL shows a non-VCL NAL or the first slice of the next picture.
 //
-// A NAL unit's boundary is only known once we see the next start code (or
-// EOF), so the first AU emerges only after the second frame is pushed.
+// That head only arrives with the next picture's output, so the first AU
+// emerges only after the second frame is pushed.
 func (e *H264Encoder) readAUs() error {
 	parseBuf := make([]byte, 0, 1<<17)
 	readBuf := make([]byte, 8192)
 	var currentAU [][]byte
+	var auHasSlice bool
 
 	for {
 		n, err := e.stdout.Read(readBuf)
@@ -222,6 +223,13 @@ func (e *H264Encoder) readAUs() error {
 					break
 				}
 				start := sc1 + sc1Len
+				// The next NAL's first two bytes decide whether the picture
+				// before it is complete, so it is handed on before the rest
+				// of that NAL arrives.
+				if auHasSlice && start+1 < len(parseBuf) && startsPicture(parseBuf[start:]) {
+					e.params.OnData(currentAU)
+					currentAU, auHasSlice = nil, false
+				}
 				sc2, _ := findStartCode(parseBuf[start:])
 				if sc2 < 0 {
 					if sc1 > 0 {
@@ -233,10 +241,7 @@ func (e *H264Encoder) readAUs() error {
 				nal := make([]byte, end-start)
 				copy(nal, parseBuf[start:end])
 				currentAU = append(currentAU, nal)
-				if len(nal) > 0 && (nal[0]&0x1F == 1 || nal[0]&0x1F == 5) {
-					e.params.OnData(currentAU)
-					currentAU = nil
-				}
+				auHasSlice = auHasSlice || isSlice(nal)
 				parseBuf = parseBuf[end:]
 			}
 		}
@@ -247,6 +252,17 @@ func (e *H264Encoder) readAUs() error {
 			return fmt.Errorf("ffmpeg stdout: %w", err)
 		}
 	}
+}
+
+func isSlice(nal []byte) bool {
+	return len(nal) > 0 && (nal[0]&0x1F == 1 || nal[0]&0x1F == 5)
+}
+
+// startsPicture reports whether a NAL that follows a slice begins the next
+// access unit: any non-VCL NAL, or a slice with first_mb_in_slice 0, whose
+// ue(v) code is the single bit 1. nal holds at least two bytes.
+func startsPicture(nal []byte) bool {
+	return !isSlice(nal) || nal[1]&0x80 != 0
 }
 
 // findStartCode returns (offset, length) of the first Annex-B start code in
