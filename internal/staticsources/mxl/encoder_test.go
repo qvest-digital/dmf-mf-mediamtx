@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/qvest-digital/go-mxl/mxl"
@@ -98,18 +99,54 @@ func TestReadAUsGroupsSlicesIntoOnePicture(t *testing.T) {
 		pFirst,
 	)
 
-	var aus [][][]byte
-	e := &H264Encoder{
-		ffmpegProcess: &ffmpegProcess{stdout: io.NopCloser(bytes.NewReader(stream))},
-		params:        EncoderParams{OnData: func(au [][]byte) { aus = append(aus, au) }},
-	}
-	require.NoError(t, e.readAUs())
+	// ffmpeg's pipe splits the stream anywhere, start codes and NAL heads
+	// included, so byte-at-a-time reads must group exactly like one read.
+	for name, r := range map[string]func() io.Reader{
+		"one read":   func() io.Reader { return bytes.NewReader(stream) },
+		"byte reads": func() io.Reader { return iotest.OneByteReader(bytes.NewReader(stream)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var aus [][][]byte
+			e := &H264Encoder{
+				ffmpegProcess: &ffmpegProcess{stdout: io.NopCloser(r())},
+				params:        EncoderParams{OnData: func(au [][]byte) { aus = append(aus, au) }},
+			}
+			require.NoError(t, e.readAUs())
 
-	require.Equal(t, [][][]byte{
-		{sps, pps, idrFirst, idrNext, idrNext, idrNext},
-		{pFirst, pNext, pNext, pNext},
-		{pFirst, pNext},
-	}, aus)
+			require.Equal(t, [][][]byte{
+				{sps, pps, idrFirst, idrNext, idrNext, idrNext},
+				{pFirst, pNext, pNext, pNext},
+				{pFirst, pNext},
+			}, aus)
+		})
+	}
+}
+
+func TestReadAUsHandsOnAPictureAtTheNextPicturesHead(t *testing.T) {
+	// x264 writes the next picture only once it is encoded, a frame interval
+	// later. Waiting for more than the two bytes that mark its first slice
+	// would add that interval to every picture's latency.
+	pFirst, pNext := []byte{0x41, 0x9a, 3}, []byte{0x41, 0x30, 4}
+	pr, pw := io.Pipe()
+	aus := make(chan [][]byte, 2)
+	e := &H264Encoder{
+		ffmpegProcess: &ffmpegProcess{stdout: pr},
+		params:        EncoderParams{OnData: func(au [][]byte) { aus <- au }},
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.readAUs() }()
+
+	_, err := pw.Write(annexB(pFirst, pNext, []byte{0x41, 0x9a}))
+	require.NoError(t, err)
+	select {
+	case au := <-aus:
+		require.Equal(t, [][]byte{pFirst, pNext}, au)
+	case <-time.After(5 * time.Second):
+		t.Fatal("picture not handed on before the rest of the next one arrived")
+	}
+
+	require.NoError(t, pw.Close())
+	require.NoError(t, <-done)
 }
 
 func TestH264EncoderOneAccessUnitPerFrame(t *testing.T) {
