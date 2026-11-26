@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.0-rc.19](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.18...mxl-v1.0.0-rc.19) (2026-11-25)
+
+
+### Bug Fixes
+
+* **mxl:** accept v210 widths that are not a multiple of 6 ([#59](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/59)) ([a177e7c](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/a177e7cd005a990c2fca09a6fb49661865605db2))
+
+
+### Performance Improvements
+
+* **mxl:** encode previews with sliced threads instead of frame threads ([#61](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/61)) ([c97997a](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/c97997adf4c4a753f9a9964db1adabef7c42dc82))
+* **mxl:** read the preview encoder's output as NUT ([#62](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/62)) ([fa2b9e8](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/fa2b9e8a1ba9c54f37bfc61a55e6a831d0680e6c))
+
+
+### Continuous Integration
+
+* list performance improvements in the changelog ([#63](https://github.com/qvest-digital/dmf-mf-mediamtx/issues/63)) ([c358a38](https://github.com/qvest-digital/dmf-mf-mediamtx/commit/c358a386531d5bf7caaec9a86c5b1aeb1acad55d))
+
 ## [1.0.0-rc.18](https://github.com/qvest-digital/dmf-mf-mediamtx/compare/mxl-v1.0.0-rc.17...mxl-v1.0.0-rc.18) (2026-11-13)
 
 
